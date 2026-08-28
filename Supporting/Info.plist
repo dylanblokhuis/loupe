@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Kubernetes API servers are almost always presented by a private CA that is
+	  named in the kubeconfig, not by a root the system trusts. App Transport
+	  Security refuses those connections even when the app's own delegate has
+	  already validated the chain against that CA, so ATS is stood down and the
+	  app pins to the kubeconfig's certificate authority itself
+	  (see KubeSessionDelegate).
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
