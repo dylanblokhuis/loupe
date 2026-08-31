@@ -32,6 +32,10 @@ final class ClusterConnection: Identifiable {
     private(set) var warnings: [String] = []
     private(set) var nodeMetrics: [String: NodeMetrics] = [:]
     private(set) var podMetrics: [String: PodMetrics] = [:]
+    /// Bumped every time the two dictionaries above are replaced. `PodMetrics`
+    /// is not `Equatable`, and views that fold usage into their own state need
+    /// something they can watch for a change.
+    private(set) var metricsRevision = 0
     private(set) var helmAvailable = false
 
     /// Whether the cluster serves `metrics.k8s.io`, which decides what
@@ -161,6 +165,7 @@ final class ClusterConnection: Identifiable {
         namespaces = []
         nodeMetrics = [:]
         podMetrics = [:]
+        metricsRevision &+= 1
         metricsSource = .off
         metricsError = nil
         metricsServerAvailable = false
@@ -273,6 +278,7 @@ final class ClusterConnection: Identifiable {
         MetricsSettingsStore.save(settings, context: target.contextName)
         nodeMetrics = [:]
         podMetrics = [:]
+        metricsRevision &+= 1
         resolveMetricsSource()
         guard state.isReady else { return }
         startMetricsRefresh()
@@ -310,6 +316,7 @@ final class ClusterConnection: Identifiable {
             )
             nodeMetrics = snapshot.nodes
             podMetrics = snapshot.pods
+            metricsRevision &+= 1
             // Reaching Prometheus and getting nothing back is a real failure —
             // usually a label convention the default queries do not match — and
             // showing empty bars as if that were the truth would hide it.
@@ -336,6 +343,7 @@ final class ClusterConnection: Identifiable {
                 )
             }
             nodeMetrics = result
+            metricsRevision &+= 1
         }
         if let pods = await pods {
             var result: [String: PodMetrics] = [:]
@@ -359,6 +367,7 @@ final class ClusterConnection: Identifiable {
                 )
             }
             podMetrics = result
+            metricsRevision &+= 1
         }
     }
 }

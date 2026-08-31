@@ -1,11 +1,15 @@
 import SwiftUI
 
-/// A column as rendered on screen — either one the API server described, or the
-/// Namespace column the app adds when browsing across namespaces.
+/// A column as rendered on screen — one the API server described, the Namespace
+/// column the app adds when browsing across namespaces, or a usage column fed
+/// from the cluster's metrics source.
 struct DisplayColumn: Identifiable, Hashable {
     enum Source: Hashable {
         case namespace
         case server(index: Int)
+        /// Live CPU or memory. The Table response carries no such cell, so the
+        /// value is read off the row, where `ResourceListModel` stamped it.
+        case usage(ResourceUsage.Kind)
     }
 
     /// Distinct from the title: a custom resource may print two columns with
@@ -22,6 +26,10 @@ struct DisplayColumn: Identifiable, Hashable {
             return row.object.namespace ?? "—"
         case .server(let index):
             return row.cells.indices.contains(index) ? row.cells[index] : ""
+        case .usage(let kind):
+            // Empty rather than a dash: the cell renders its own placeholder,
+            // and an empty string keeps the column from sizing to it.
+            return row.usage?.formatted(kind) ?? ""
         }
     }
 }
@@ -203,6 +211,12 @@ struct ResourceTableView: View {
                 AgeText(date: row.object.creationTimestamp)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+            } else if case .usage = column.source {
+                Text(text.isEmpty ? "—" : text)
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(text.isEmpty ? .tertiary : .secondary)
+                    .lineLimit(1)
             } else {
                 Text(text.isEmpty ? "—" : text)
                     .font(.system(size: 11))

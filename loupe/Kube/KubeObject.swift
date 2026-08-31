@@ -284,8 +284,46 @@ struct ResourceColumn: Sendable, Hashable, Identifiable {
 struct ResourceRow: Identifiable, Sendable {
     var object: KubeObject
     var cells: [String]
+    /// Live usage, stamped on by `ResourceListModel`. The Table response the
+    /// columns come from carries no such cell — metrics are a different API
+    /// on a refresh cycle of their own — so it is folded into the row rather
+    /// than looked up while drawing, which keeps `DisplayColumn.value(for:)`
+    /// a pure function of the row for sorting and column sizing alike.
+    var usage: ResourceUsage?
 
     var id: String { object.id }
+}
+
+/// What one object is using right now, from metrics-server or Prometheus.
+struct ResourceUsage: Sendable, Hashable {
+    enum Kind: Sendable, Hashable {
+        case cpu
+        case memory
+
+        var title: String {
+            switch self {
+            case .cpu: return "CPU"
+            case .memory: return "Memory"
+            }
+        }
+    }
+
+    var cpuMillicores: Double
+    var memoryBytes: Double
+
+    func value(_ kind: Kind) -> Double {
+        switch kind {
+        case .cpu: return cpuMillicores
+        case .memory: return memoryBytes
+        }
+    }
+
+    func formatted(_ kind: Kind) -> String {
+        switch kind {
+        case .cpu: return Quantity.formatCPU(cpuMillicores)
+        case .memory: return Quantity.formatBytes(memoryBytes)
+        }
+    }
 }
 
 /// A decoded `meta.k8s.io/v1` Table response.

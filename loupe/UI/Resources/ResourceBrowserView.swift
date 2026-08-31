@@ -43,6 +43,9 @@ struct ResourceBrowserView: View {
         .navigationTitle(resource.displayName)
         .task(id: connection.selectedNamespaces) { model.start() }
         .onDisappear { model.stop() }
+        // Usage arrives on the connection's own 30-second cycle, not through
+        // the watch, so the rows are restamped whenever a snapshot lands.
+        .onChange(of: connection.metricsRevision) { _, _ in model.applyUsage() }
         .onChange(of: selection) { _, newValue in
             guard let newValue, let row = model.rows.first(where: { $0.id == newValue }) else { return }
             inspection = InspectionTarget(object: row.object, resource: resource)
@@ -238,6 +241,10 @@ struct ResourceBrowserView: View {
                 Button("Clear sort") { model.sortColumnID = nil }
                     .disabled(model.sortColumnID == nil)
                 Divider()
+                if resource.kind == "Pod", resource.group.isEmpty, !connection.metricsAvailable {
+                    Text("CPU and memory need a metrics source — choose one in Settings › Metrics.")
+                    Divider()
+                }
                 Text(resource.groupVersion)
                 Text(resource.namespaced ? "Namespaced" : "Cluster-scoped")
             } label: {

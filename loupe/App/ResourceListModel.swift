@@ -189,6 +189,7 @@ final class ResourceListModel {
     private func apply(_ table: ResourceTable) {
         columns = table.columns
         rows = table.rows
+        for index in rows.indices { rows[index].usage = usage(for: rows[index].object) }
         resourceVersion = table.resourceVersion
         reindex()
     }
@@ -199,6 +200,39 @@ final class ResourceListModel {
         for (offset, row) in rows.enumerated() where index[row.id] == nil {
             index[row.id] = offset
         }
+        rowsVersion &+= 1
+    }
+
+    // MARK: Usage
+
+    /// Whether this list should carry CPU and memory columns.
+    ///
+    /// Only pods qualify: `podMetrics` is the one usage map keyed by something
+    /// a row can be matched against, and the Table representation never carries
+    /// usage for any kind.
+    private var reportsUsage: Bool {
+        resource.kind == "Pod" && resource.group.isEmpty && connection?.metricsAvailable == true
+    }
+
+    private func usage(for object: KubeObject) -> ResourceUsage? {
+        guard reportsUsage,
+              let metrics = connection?.podMetrics["\(object.namespace ?? "")/\(object.name)"]
+        else { return nil }
+        return ResourceUsage(cpuMillicores: metrics.cpuMillicores, memoryBytes: metrics.memoryBytes)
+    }
+
+    /// Restamps every row from the latest metrics snapshot.
+    ///
+    /// Metrics arrive on their own cycle, unrelated to the watch, so the view
+    /// calls this when `ClusterConnection.metricsRevision` moves.
+    func applyUsage() {
+        guard reportsUsage else {
+            guard rows.contains(where: { $0.usage != nil }) else { return }
+            for index in rows.indices { rows[index].usage = nil }
+            rowsVersion &+= 1
+            return
+        }
+        for index in rows.indices { rows[index].usage = usage(for: rows[index].object) }
         rowsVersion &+= 1
     }
 
@@ -319,7 +353,8 @@ final class ResourceListModel {
             resourceVersion = version
         }
         if event.type == .bookmark { return table.resourceVersion }
-        guard let row = table.rows.first else { return table.resourceVersion }
+        guard var row = table.rows.first else { return table.resourceVersion }
+        row.usage = usage(for: row.object)
 
         if let scope = namespaceScope, resource.namespaced,
            let namespace = row.object.namespace, !scope.contains(namespace) {
@@ -383,6 +418,28 @@ final class ResourceListModel {
 
         if result.isEmpty {
             result = [DisplayColumn(id: "0.Name", title: "Name", source: .server(index: 0), weight: 3)]
+        }
+
+        if reportsUsage {
+            let source = connection?.metricsSource.label ?? "metrics"
+            let usage: [DisplayColumn] = [ResourceUsage.Kind.cpu, .memory].map { kind in
+                DisplayColumn(
+                    id: "usage.\(kind.title)",
+                    title: kind.title,
+                    source: .usage(kind),
+                    description: "\(kind.title) currently used, reported by \(source)",
+                    weight: 0.7
+                )
+            }
+            // Age reads best last, the way kubectl prints it, so the usage
+            // columns go in front of it rather than after.
+            if let age = result.firstIndex(where: {
+                $0.title.caseInsensitiveCompare("Age") == .orderedSame
+            }) {
+                result.insert(contentsOf: usage, at: age)
+            } else {
+                result.append(contentsOf: usage)
+            }
         }
         return result
     }
@@ -448,6 +505,14 @@ final class ResourceListModel {
     private func compare(
         _ lhs: ResourceRow, _ rhs: ResourceRow, using column: DisplayColumn, isAge: Bool, isNumeric: Bool
     ) -> ComparisonResult {
+        if case .usage(let kind) = column.source {
+            // `250m` and `1.50` do not compare as text; rows with no reading
+            // yet sort below every row that has one.
+            let left = lhs.usage?.value(kind) ?? -.infinity
+            let right = rhs.usage?.value(kind) ?? -.infinity
+            if left == right { return .orderedSame }
+            return left < right ? .orderedAscending : .orderedDescending
+        }
         if isAge {
             // Age cells are durations; order by the real creation time, newest
             // first, which is what "ascending age" means to a reader.
