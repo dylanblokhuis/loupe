@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Xcode user-specific state — window layout, breakpoints, scheme ordering.
+# Shared scheme and Package.resolved live under xcshareddata/ and stay tracked.
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# Build products
+build/
+DerivedData/
+dist/
+*.xcarchive
+*.dmg
+*.dmg.sha256
+
+# Swift Package Manager
+.build/
+.swiftpm/
