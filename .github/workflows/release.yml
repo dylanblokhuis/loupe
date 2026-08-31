@@ -1,0 +1,447 @@
+name: Release
+
+# Builds loupe.app as a universal binary, wraps it in a drag-to-install .dmg and
+# attaches that to a GitHub release.
+#
+# Push a tag to cut a release:
+#
+#     git tag v1.2.3 && git push origin v1.2.3
+#
+# ...or run this workflow manually from the Actions tab and give it a version,
+# in which case the tag is created for you at the commit you ran it from. The
+# version in the tag overrides MARKETING_VERSION, so it does not have to be
+# committed to the project first.
+#
+# ---------------------------------------------------------------------------
+# Signing
+# ---------------------------------------------------------------------------
+# With no secrets configured this still works: the .dmg is ad-hoc signed, and
+# the release notes tell people to strip the quarantine flag by hand. That is
+# fine for testing, and unacceptable for anything you expect strangers to
+# install.
+#
+# To ship a signed, notarized build that Gatekeeper opens without complaint, add
+# these repository secrets (Settings -> Secrets and variables -> Actions):
+#
+#   MACOS_CERTIFICATE_P12       base64 of a "Developer ID Application" .p12,
+#                               exported from Keychain Access:
+#                                 base64 -i cert.p12 | pbcopy
+#   MACOS_CERTIFICATE_PASSWORD  the password you set on that .p12
+#
+# ...plus notarization credentials, either an App Store Connect API key (the
+# better option — revocable, and not tied to a person):
+#
+#   APPLE_API_KEY_P8            base64 of the AuthKey_XXXX.p8 download
+#   APPLE_API_KEY_ID            the key ID, e.g. 2X9R4HXF34
+#   APPLE_API_ISSUER_ID         the issuer UUID from App Store Connect
+#
+# ...or an Apple ID:
+#
+#   APPLE_ID                    the Apple ID email
+#   APPLE_APP_PASSWORD          an app-specific password from appleid.apple.com
+#
+# The team ID is read out of the certificate, so there is nothing else to set.
+# Add the certificate secrets without notarization credentials and the build
+# will be signed but still rejected on download — the job warns about that.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (e.g. 1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SCHEME: loupe
+  CONFIGURATION: Release
+  APP_NAME: loupe
+  # Name used for the .dmg and the mounted volume; the bundle itself stays loupe.app.
+  DISPLAY_NAME: Loupe
+  # Uncomment to pin the toolchain instead of taking whatever Xcode the runner
+  # image defaults to. The project needs Xcode 26.2 or newer (objectVersion 77,
+  # macOS 26.2 deployment target).
+  # DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+
+jobs:
+  release:
+    # macos-26 is Apple Silicon and ships Xcode 26.x; the Release configuration
+    # builds ARCHS = "arm64 x86_64", so the .app is universal either way.
+    runs-on: macos-26
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          # Full history so the generated release notes can diff against the
+          # previous tag.
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        env:
+          # Never interpolate a workflow input straight into a shell script.
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version=${INPUT_VERSION#v}
+          else
+            version=${GITHUB_REF_NAME#v}
+          fi
+
+          if ! [[ "$version" =~ ^[0-9]+(\.[0-9]+)*([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$version' is not a usable version number (expected something like 1.2.3 or 1.2.3-beta.1)"
+            exit 1
+          fi
+
+          # Anything carrying a pre-release suffix ships flagged as a pre-release.
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "prerelease=$prerelease"
+            echo "dmg=$DISPLAY_NAME-$version.dmg"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Releasing $DISPLAY_NAME $version"
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          echo "macOS SDK: $(xcrun --sdk macosx --show-sdk-version)"
+
+      - name: Decide whether this build can be signed and notarized
+        id: config
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          AC_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          AC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          AC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sign=false
+          notarize=false
+
+          if [ -n "$CERT_P12" ] && [ -n "$CERT_PASSWORD" ]; then
+            sign=true
+          fi
+
+          if [ "$sign" = true ]; then
+            if [ -n "$AC_KEY_P8" ] && [ -n "$AC_KEY_ID" ] && [ -n "$AC_ISSUER_ID" ]; then
+              notarize=true
+            elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+              notarize=true
+            fi
+          fi
+
+          {
+            echo "sign=$sign"
+            echo "notarize=$notarize"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$notarize" = true ]; then
+            echo "Developer ID signing + notarization enabled."
+          elif [ "$sign" = true ]; then
+            echo "::warning::Signing certificate found but no notarization credentials; the .dmg will be signed but not notarized, and Gatekeeper will still block it on download."
+          else
+            echo "::warning::No signing secrets configured — producing an ad-hoc signed .dmg. See the release notes for the Gatekeeper workaround."
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.config.outputs.sign == 'true'
+        id: signing
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          AC_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          AC_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          AC_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          keychain="$RUNNER_TEMP/loupe-release.keychain-db"
+          keychain_password=$(openssl rand -base64 24)
+          echo "::add-mask::$keychain_password"
+          echo "KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          # Keep it unlocked for the whole job — the default five-minute auto-lock
+          # would otherwise expire mid-notarization and break the later DMG signing.
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+
+          cert="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$CERT_P12" | base64 --decode > "$cert"
+          security import "$cert" -k "$keychain" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$cert"
+
+          # Without a partition list, codesign puts up a keychain prompt that
+          # nothing on a headless runner can answer, and the job hangs.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" > /dev/null
+
+          # Put it on the search list so xcodebuild's codesign invocations find it.
+          security list-keychain -d user -s "$keychain" login.keychain-db
+
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | grep "Developer ID Application" | head -1 || true)
+          if [ -z "$identity" ]; then
+            echo "::error::MACOS_CERTIFICATE_P12 contains no 'Developer ID Application' identity."
+            security find-identity -v -p codesigning "$keychain" || true
+            exit 1
+          fi
+
+          # e.g. `  1) ABC123... "Developer ID Application: Jane Doe (Z4AVGW62JX)"`
+          identity_hash=$(echo "$identity" | awk '{print $2}')
+          team_id=$(echo "$identity" | sed -n 's/.*(\([A-Z0-9]\{6,\}\))".*/\1/p')
+          if [ -z "$team_id" ]; then
+            echo "::error::Could not read a team ID out of the signing identity."
+            exit 1
+          fi
+          echo "Signing as $identity_hash (team $team_id)"
+
+          {
+            echo "identity=$identity_hash"
+            echo "team_id=$team_id"
+          } >> "$GITHUB_OUTPUT"
+
+          # Stash the notarization credentials in the keychain once, so the two
+          # later notarytool calls don't each have to repeat this branch.
+          if [ -n "$AC_KEY_P8" ] && [ -n "$AC_KEY_ID" ] && [ -n "$AC_ISSUER_ID" ]; then
+            key="$RUNNER_TEMP/AuthKey.p8"
+            printf '%s' "$AC_KEY_P8" | base64 --decode > "$key"
+            xcrun notarytool store-credentials loupe-notary \
+              --key "$key" --key-id "$AC_KEY_ID" --issuer "$AC_ISSUER_ID" \
+              --keychain "$keychain"
+            rm -f "$key"
+          elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            xcrun notarytool store-credentials loupe-notary \
+              --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$team_id" \
+              --keychain "$keychain"
+          fi
+
+      - name: Resolve Swift package dependencies
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            -project loupe.xcodeproj \
+            -scheme "$SCHEME"
+
+      - name: Archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SIGN: ${{ steps.config.outputs.sign }}
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+          TEAM_ID: ${{ steps.signing.outputs.team_id }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$APP_NAME.xcarchive"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+          settings=(
+            MARKETING_VERSION="$VERSION"
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"
+          )
+
+          if [ "$SIGN" = "true" ]; then
+            settings+=(
+              CODE_SIGN_STYLE=Manual
+              CODE_SIGN_IDENTITY="$IDENTITY"
+              DEVELOPMENT_TEAM="$TEAM_ID"
+              PROVISIONING_PROFILE_SPECIFIER=""
+              # Notarization rejects any signature without a secure timestamp.
+              OTHER_CODE_SIGN_FLAGS="--timestamp"
+            )
+          else
+            # Ad-hoc: arm64 binaries must carry at least some signature to launch,
+            # and there is no real identity to give them.
+            settings+=(
+              CODE_SIGN_STYLE=Manual
+              CODE_SIGN_IDENTITY="-"
+              DEVELOPMENT_TEAM=""
+              PROVISIONING_PROFILE_SPECIFIER=""
+            )
+          fi
+
+          xcodebuild archive \
+            -project loupe.xcodeproj \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -destination "generic/platform=macOS" \
+            -archivePath "$archive" \
+            -disableAutomaticPackageResolution \
+            "${settings[@]}"
+
+      - name: Export the signed app
+        if: steps.config.outputs.sign == 'true'
+        env:
+          TEAM_ID: ${{ steps.signing.outputs.team_id }}
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: |
+          set -euo pipefail
+          export_dir="$RUNNER_TEMP/export"
+
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>developer-id</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>$IDENTITY</string>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE" \
+            -exportPath "$export_dir" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+
+          echo "APP=$export_dir/$APP_NAME.app" >> "$GITHUB_ENV"
+
+      - name: Take the ad-hoc app straight out of the archive
+        if: steps.config.outputs.sign != 'true'
+        run: |
+          set -euo pipefail
+          # -exportArchive with method developer-id needs a real identity, so for
+          # unsigned builds the archived product itself is the deliverable.
+          echo "APP=$ARCHIVE/Products/Applications/$APP_NAME.app" >> "$GITHUB_ENV"
+
+      - name: Notarize and staple the app
+        if: steps.config.outputs.notarize == 'true'
+        run: |
+          set -euo pipefail
+          # notarytool accepts .zip/.pkg/.dmg, never a bare bundle.
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/$APP_NAME.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/$APP_NAME.zip" \
+            --keychain-profile loupe-notary \
+            --keychain "$KEYCHAIN" \
+            --wait --timeout 30m
+          # Staple the bundle before it goes into the .dmg: a read-only image
+          # can't be stapled after the fact, and someone who drags the app out of
+          # the image should still get offline validation.
+          xcrun stapler staple "$APP"
+
+      - name: Build the .dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DMG_FILE: ${{ steps.version.outputs.dmg }}
+        run: |
+          set -euo pipefail
+          dmg="$GITHUB_WORKSPACE/dist/$DMG_FILE"
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+          scripts/make-dmg.sh "$APP" "$dmg" "$DISPLAY_NAME $VERSION"
+
+      - name: Sign, notarize and staple the .dmg
+        if: steps.config.outputs.notarize == 'true'
+        env:
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: |
+          set -euo pipefail
+          codesign --sign "$IDENTITY" --timestamp --keychain "$KEYCHAIN" "$DMG"
+          xcrun notarytool submit "$DMG" \
+            --keychain-profile loupe-notary \
+            --keychain "$KEYCHAIN" \
+            --wait --timeout 30m
+          xcrun stapler staple "$DMG"
+
+          # Fail the release rather than publish something Gatekeeper rejects.
+          spctl --assess --type open --context context:primary-signature -vv "$DMG"
+
+      - name: Checksum
+        run: |
+          set -euo pipefail
+          cd "$(dirname "$DMG")"
+          shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256"
+          cat "$(basename "$DMG").sha256"
+
+      # Keeps the build reachable even if publishing the release fails.
+      - name: Upload the .dmg as a build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.version.outputs.tag }}-dmg
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          NOTARIZED: ${{ steps.config.outputs.notarize }}
+        run: |
+          set -euo pipefail
+
+          minimum_os=$(sed -n 's/.*MACOSX_DEPLOYMENT_TARGET = \([0-9.]*\);.*/\1/p' \
+            loupe.xcodeproj/project.pbxproj | head -1)
+
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "Download **$(basename "$DMG")** below, open it, and drag $DISPLAY_NAME into Applications."
+            echo
+            echo "Requires macOS ${minimum_os:-26.2} or later. Universal binary (Apple Silicon and Intel)."
+            if [ "$NOTARIZED" != "true" ]; then
+              echo
+              echo "> [!WARNING]"
+              echo "> This build is **not notarized**, so macOS refuses to open it with a \"damaged\""
+              echo "> or \"unidentified developer\" message. To run it anyway, clear the quarantine"
+              echo "> flag after copying it to Applications:"
+              echo ">"
+              echo "> \`\`\`"
+              echo "> xattr -dr com.apple.quarantine /Applications/$APP_NAME.app"
+              echo "> \`\`\`"
+            fi
+
+            # gh release edit has no --generate-notes, so build the changelog from
+            # the API instead and use one identical notes file on both paths.
+            changelog=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" --jq .body 2>/dev/null || true)
+            if [ -n "$changelog" ]; then
+              echo
+              echo "$changelog"
+            fi
+          } > "$notes"
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            # Re-running a release: refresh it rather than failing on the conflict.
+            echo "Release $TAG already exists; updating it."
+            args=(--title "$DISPLAY_NAME $VERSION" --notes-file "$notes")
+            [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+            gh release edit "$TAG" "${args[@]}"
+            gh release upload "$TAG" "$DMG" "$DMG.sha256" --clobber
+          else
+            args=(--title "$DISPLAY_NAME $VERSION" --notes-file "$notes" --target "$GITHUB_SHA")
+            [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+            gh release create "$TAG" "${args[@]}" "$DMG" "$DMG.sha256"
+          fi
+
+          echo "Published $(gh release view "$TAG" --json url --jq .url)"
+
+      - name: Tear down the signing keychain
+        if: always() && steps.config.outputs.sign == 'true'
+        run: |
+          security list-keychain -d user -s login.keychain-db || true
+          security delete-keychain "$RUNNER_TEMP/loupe-release.keychain-db" || true
