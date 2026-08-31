@@ -91,6 +91,26 @@ final class AppModel {
         connections.contains { $0.target.contextName == name }
     }
 
+    func connection(named name: String) -> ClusterConnection? {
+        connections.first { $0.target.contextName == name }
+    }
+
+    // MARK: Metrics settings
+
+    /// Reads from the live connection when there is one, so an edit made in
+    /// Settings is reflected immediately rather than after a reconnect.
+    func metricsSettings(for context: String) -> MetricsSettings {
+        connection(named: context)?.metricsSettings ?? MetricsSettingsStore.load(context: context)
+    }
+
+    func updateMetricsSettings(_ settings: MetricsSettings, for context: String) {
+        if let connection = connection(named: context) {
+            connection.applyMetricsSettings(settings)
+        } else {
+            MetricsSettingsStore.save(settings, context: context)
+        }
+    }
+
     // MARK: Session persistence
 
     private func restoreSession() {

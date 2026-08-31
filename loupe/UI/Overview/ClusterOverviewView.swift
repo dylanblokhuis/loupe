@@ -82,10 +82,15 @@ struct ClusterOverviewView: View {
                     systemImage: "shippingbox"
                 )
                 Chip(
-                    text: connection.metricsAvailable ? "metrics" : "no metrics",
-                    color: connection.metricsAvailable ? .green : .secondary,
+                    text: connection.metricsSource.label,
+                    color: metricsChipColor,
                     systemImage: "waveform.path.ecg"
                 )
+                .help(connection.metricsError
+                      ?? (connection.metricsAvailable
+                          ? "CPU and memory usage is read from \(connection.metricsSource.label)."
+                          : "No usage source. Install metrics-server, or point Loupe at Prometheus "
+                              + "in Settings › Metrics."))
                 Button {
                     Task { await connection.reconnect() }
                 } label: {
@@ -132,13 +137,20 @@ struct ClusterOverviewView: View {
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
     }
 
+    /// Amber for a source that is selected but not answering: silently showing
+    /// it as "off" would hide a misconfigured endpoint.
+    private var metricsChipColor: Color {
+        if connection.metricsError != nil { return .orange }
+        return connection.metricsAvailable ? .green : .secondary
+    }
+
     // MARK: Tiles
 
     private var tiles: some View {
         let totals = self.totals
         let cpuValue = connection.metricsAvailable ? totals.cpuUsed : totals.cpuRequested
         let memoryValue = connection.metricsAvailable ? totals.memoryUsed : totals.memoryRequested
-        let fallbackCaption = "requests (metrics-server not installed)"
+        let fallbackCaption = "requests (no usage source)"
 
         return LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 10)], spacing: 10) {
             StatTile(
@@ -169,8 +181,9 @@ struct ClusterOverviewView: View {
                 progress: (cpuValue, totals.cpuAllocatable)
             )
             .help(connection.metricsAvailable
-                  ? "Live usage across all nodes"
-                  : "Sum of pod CPU requests — \(fallbackCaption)")
+                  ? "Live usage across all nodes, from \(connection.metricsSource.label)"
+                  : "Sum of pod CPU requests — no usage source. "
+                      + "Install metrics-server, or point Loupe at Prometheus in Settings › Metrics.")
             StatTile(
                 title: "Memory",
                 value: Quantity.formatBytes(memoryValue),
@@ -182,8 +195,9 @@ struct ClusterOverviewView: View {
                 progress: (memoryValue, totals.memoryAllocatable)
             )
             .help(connection.metricsAvailable
-                  ? "Live usage across all nodes"
-                  : "Sum of pod memory requests — \(fallbackCaption)")
+                  ? "Live usage across all nodes, from \(connection.metricsSource.label)"
+                  : "Sum of pod memory requests — no usage source. "
+                      + "Install metrics-server, or point Loupe at Prometheus in Settings › Metrics.")
             StatTile(
                 title: "Namespaces",
                 value: "\(connection.namespaces.count)",

@@ -258,10 +258,12 @@ struct ResourceBrowserView: View {
     @ViewBuilder
     private func menu(for row: ResourceRow) -> some View {
         Button("Show Details") { inspection = InspectionTarget(object: row.object, resource: resource) }
-        if resource.kind == "Pod" {
-            Button("View Logs") {
+        if resource.kind == "Pod" || WorkloadPods.kinds.contains(resource.kind) {
+            Button(resource.kind == "Pod" ? "View Logs" : "View Logs (all pods)") {
                 inspection = InspectionTarget(object: row.object, resource: resource, initialTab: .logs)
             }
+        }
+        if resource.kind == "Pod" {
             Button("Open Shell") {
                 inspection = InspectionTarget(object: row.object, resource: resource, initialTab: .shell)
             }

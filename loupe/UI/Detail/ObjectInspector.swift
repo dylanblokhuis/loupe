@@ -28,10 +28,18 @@ struct ObjectInspector: View {
         target.resource ?? connection.catalog.resource(apiVersion: object.apiVersion, kind: object.kind)
     }
 
+    /// Logs are offered for a pod and for any controller whose pods can be
+    /// gathered; a shell only ever makes sense on one pod.
+    private var logScope: LogScope? { LogScope.best(for: object) }
+
     private var availableTabs: [InspectorTab] {
-        object.kind == "Pod"
-            ? InspectorTab.allCases
-            : InspectorTab.allCases.filter { $0 != .logs && $0 != .shell }
+        InspectorTab.allCases.filter { tab in
+            switch tab {
+            case .logs: return logScope != nil
+            case .shell: return object.kind == "Pod"
+            default: return true
+            }
+        }
     }
 
     var body: some View {
@@ -106,7 +114,7 @@ struct ObjectInspector: View {
         switch tab {
         case .overview:
             ScrollView {
-                ObjectOverview(connection: connection, object: object)
+                ObjectOverview(connection: connection, object: object, runner: runner)
                     .padding(14)
             }
         case .yaml:
@@ -114,7 +122,13 @@ struct ObjectInspector: View {
         case .events:
             ObjectEventsView(connection: connection, object: object)
         case .logs:
-            PodLogsView(connection: connection, pod: object)
+            if let logScope {
+                LogsView(connection: connection, scope: logScope)
+                    // Identity follows the object, not the watch event that
+                    // last refreshed it, so live updates do not restart the
+                    // streams and throw away everything already on screen.
+                    .id(object.id)
+            }
         case .shell:
             PodTerminalView(connection: connection, pod: object)
         }
@@ -194,6 +208,22 @@ struct ObjectInspector: View {
                         }
                     }
                 }
+                if object.kind == "CronJob", resource.group == "batch" {
+                    Button("Run Now") { triggerCronJob() }
+                    if resource.isEditable {
+                        let suspended = object.raw.bool(at: "spec.suspend") ?? false
+                        Button(suspended ? "Resume Schedule" : "Suspend Schedule") {
+                            guard let client = connection.client else { return }
+                            runner.run("Updated") {
+                                try await ResourceActions.setSuspended(
+                                    client: client, resource: resource,
+                                    object: object, suspended: !suspended
+                                )
+                                return suspended ? "Schedule resumed" : "Schedule suspended"
+                            }
+                        }
+                    }
+                }
                 if resource.isDeletable {
                     Divider()
                     Button("Delete…", role: .destructive) { pendingDeletion = true }
@@ -204,6 +234,14 @@ struct ObjectInspector: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+
+    private func triggerCronJob() {
+        guard let client = connection.client else { return }
+        runner.run("Triggered") {
+            let name = try await ResourceActions.triggerCronJob(client: client, object: object)
+            return "Created job \(name)"
+        }
     }
 
     /// Keeps the inspector in sync by watching just this object. Cancellation

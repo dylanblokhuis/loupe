@@ -562,7 +562,9 @@ struct RelatedPodsSection: View {
             pods = []
             return
         }
-        pods = result.array(at: "items").map(KubeObject.init)
+        // Through `items(of:)` rather than raw: list entries carry no `kind`,
+        // so the health dots beside these pods would all read "unknown".
+        pods = KubeObject.items(of: result)
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
@@ -570,7 +572,13 @@ struct RelatedPodsSection: View {
 // MARK: - Jobs
 
 struct JobSections: View {
+    let connection: ClusterConnection
     let job: KubeObject
+    let runner: ActionRunner
+
+    /// Bumped after a manual trigger so the runs list picks the new Job up
+    /// without waiting for its next poll.
+    @State private var runsToken = 0
 
     var body: some View {
         DetailSection(title: job.kind, systemImage: "hammer") {
@@ -582,6 +590,16 @@ struct JobSections: View {
                 DetailRow("Last Successful",
                           Age.absolute(KubeDate.parse(job.raw.string(at: "status.lastSuccessfulTime"))))
                 DetailRow("Active", "\(job.raw.array(at: "status.active").count)")
+                DetailRow(label: "Run") {
+                    HStack(spacing: 8) {
+                        Button("Run Now", systemImage: "play.fill") { trigger() }
+                            .controlSize(.small)
+                            .disabled(connection.client == nil || runner.isBusy)
+                        Text("Creates a Job from the template, as `kubectl create job --from` does.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } else {
                 DetailRow("Completions", "\(job.raw.int(at: "spec.completions") ?? 1)")
                 DetailRow("Parallelism", "\(job.raw.int(at: "spec.parallelism") ?? 1)")
@@ -597,6 +615,104 @@ struct JobSections: View {
                     DetailRow("Duration", Age.short(seconds: completion.timeIntervalSince(start)))
                 }
             }
+        }
+
+        if job.kind == "CronJob" {
+            CronJobRunsSection(connection: connection, cronJob: job, reloadToken: runsToken)
+        }
+    }
+
+    private func trigger() {
+        guard let client = connection.client else { return }
+        runner.run("Triggered \(job.name)") {
+            let name = try await ResourceActions.triggerCronJob(client: client, object: job)
+            runsToken += 1
+            return "Created job \(name)"
+        }
+    }
+}
+
+/// The Jobs a CronJob has produced, so a manual run is visible the moment it
+/// lands rather than being an action with no feedback.
+struct CronJobRunsSection: View {
+    let connection: ClusterConnection
+    let cronJob: KubeObject
+    var reloadToken = 0
+
+    @State private var jobs: [KubeObject] = []
+    @State private var loaded = false
+    @State private var errorMessage: String?
+
+    private static let shown = 8
+
+    var body: some View {
+        DetailSection(title: "Runs", systemImage: "clock.arrow.circlepath") {
+            if !loaded {
+                ProgressView().controlSize(.small)
+            } else if let errorMessage {
+                Text(errorMessage).font(.system(size: 11)).foregroundStyle(.secondary)
+            } else if jobs.isEmpty {
+                Text("This CronJob has not created any jobs yet.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(jobs.prefix(Self.shown)) { run in
+                    HStack(spacing: 6) {
+                        HealthDot(health: run.health)
+                        Text(run.name)
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if run.annotations.contains(where: {
+                            $0.key == "cronjob.kubernetes.io/instantiate"
+                        }) {
+                            Chip(text: "manual", color: .accentColor)
+                        }
+                        Spacer()
+                        Text(Self.summary(of: run))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        AgeText(date: run.creationTimestamp)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 1)
+                }
+                if jobs.count > Self.shown {
+                    Text("and \(jobs.count - Self.shown) more")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        // Polls rather than watches: a CronJob's Jobs change on the schedule's
+        // timescale, and a watch per inspector tab is not worth the connection.
+        .task(id: "\(cronJob.id)|\(reloadToken)") {
+            while !Task.isCancelled {
+                await load()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+    }
+
+    private static func summary(of run: KubeObject) -> String {
+        let succeeded = run.raw.int(at: "status.succeeded") ?? 0
+        let failed = run.raw.int(at: "status.failed") ?? 0
+        let active = run.raw.int(at: "status.active") ?? 0
+        if active > 0 { return "\(active) active" }
+        if failed > 0 { return "\(failed) failed" }
+        if succeeded > 0 { return "\(succeeded) succeeded" }
+        return "pending"
+    }
+
+    private func load() async {
+        defer { loaded = true }
+        guard let client = connection.client, let namespace = cronJob.namespace else { return }
+        do {
+            jobs = try await WorkloadPods.jobs(client: client, cronJob: cronJob, namespace: namespace)
+            errorMessage = nil
+        } catch {
+            if !Task.isCancelled { errorMessage = ClusterConnection.describe(error) }
         }
     }
 }

@@ -157,7 +157,10 @@ enum ResourceActions {
         else {
             throw ActionError.message("This CronJob has no job template.")
         }
-        let suffix = String(Int(Date().timeIntervalSince1970) % 1_000_000)
+        // Timestamped so runs sort, with a random tail so triggering twice in
+        // the same second is two jobs rather than a 409.
+        let random = String((0..<4).map { _ in "abcdefghijklmnopqrstuvwxyz0123456789".randomElement()! })
+        let suffix = String(Int(Date().timeIntervalSince1970) % 1_000_000) + random
         // Job names are DNS-1123 labels: lowercase alphanumerics and dashes,
         // never leading or trailing, at most 63 characters.
         let stem = object.name.lowercased()

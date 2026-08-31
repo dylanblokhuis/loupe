@@ -15,5 +15,31 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+
+	<!--
+	  Sparkle. The appcast is published as an asset on every GitHub release by
+	  .github/workflows/release.yml, and /releases/latest/download redirects to
+	  whichever release GitHub currently marks as latest — so there is no server
+	  to run, and pre-releases are skipped because the workflow flags them.
+	-->
+	<key>SUFeedURL</key>
+	<string>https://github.com/dylanblokhuis/loupe/releases/latest/download/appcast.xml</string>
+
+	<!--
+	  Public half of the EdDSA key pair that signs updates; the private half
+	  lives in a keychain and in the SPARKLE_PRIVATE_KEY repository secret.
+	  Sparkle refuses any download this key does not verify, which is what makes
+	  it safe to install an update without asking Gatekeeper's opinion.
+	-->
+	<key>SUPublicEDKey</key>
+	<string>BXMUq9QNpOCw5rxntlfIK84vySDJnP/rKjv5GgqJi4w=</string>
+
+	<!--
+	  Check daily without asking first. Sparkle otherwise puts up a permission
+	  prompt on second launch, and a cluster browser that silently goes stale is
+	  worse than one that mentions a new version once a day.
+	-->
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 </dict>
 </plist>

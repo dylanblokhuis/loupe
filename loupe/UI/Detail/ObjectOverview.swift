@@ -6,6 +6,9 @@ import SwiftUI
 struct ObjectOverview: View {
     let connection: ClusterConnection
     let object: KubeObject
+    /// Shared with the inspector so a section's action reports through the same
+    /// banner as the actions menu.
+    let runner: ActionRunner
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -99,7 +102,7 @@ struct ObjectOverview: View {
         case "Service": ServiceSections(connection: connection, service: object)
         case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "ReplicationController":
             WorkloadSections(connection: connection, workload: object)
-        case "Job", "CronJob": JobSections(job: object)
+        case "Job", "CronJob": JobSections(connection: connection, job: object, runner: runner)
         case "ConfigMap", "Secret": DataSections(object: object)
         case "PersistentVolumeClaim", "PersistentVolume": VolumeSections(object: object)
         case "Ingress": IngressSections(ingress: object)

@@ -72,6 +72,30 @@ struct KubeObject: Identifiable, Sendable, Hashable {
         YAMLEmitter.string(from: raw.removing("metadata.managedFields"))
     }
 
+    /// Decodes the items of a list response, stamping each with the kind the
+    /// list implies.
+    ///
+    /// A `JobList`'s items arrive with no `kind` or `apiVersion` of their own —
+    /// only the list carries them — so anything that switches on `kind`, health
+    /// rules included, would otherwise see objects of no kind at all.
+    static func items(of list: JSONValue) -> [KubeObject] {
+        let listKind = list.string(at: "kind") ?? ""
+        let kind = listKind.hasSuffix("List") ? String(listKind.dropLast(4)) : ""
+        let apiVersion = list.string(at: "apiVersion") ?? ""
+        return list.array(at: "items").map { item in
+            guard !kind.isEmpty, let fields = item.objectValue, fields["kind"] == nil else {
+                return KubeObject(item)
+            }
+            // Rebuilt rather than appended to so the type stays at the top,
+            // where the YAML tab expects it.
+            var stamped = JSONObject()
+            if !apiVersion.isEmpty { stamped["apiVersion"] = .string(apiVersion) }
+            stamped["kind"] = .string(kind)
+            for pair in fields.pairs { stamped[pair.key] = pair.value }
+            return KubeObject(.object(stamped))
+        }
+    }
+
     static func == (lhs: KubeObject, rhs: KubeObject) -> Bool {
         lhs.raw == rhs.raw
     }

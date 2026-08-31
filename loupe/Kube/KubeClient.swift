@@ -88,7 +88,11 @@ final class KubeClient: @unchecked Sendable {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 86_400
-        configuration.httpMaximumConnectionsPerHost = 16
+        // Watches and log streams each hold a connection open for as long as
+        // they run, and reading a whole Deployment's logs opens one per pod, so
+        // the default ceiling is raised well clear of what an HTTP/1.1 fallback
+        // would otherwise queue behind.
+        configuration.httpMaximumConnectionsPerHost = 64
         configuration.waitsForConnectivity = false
         configuration.httpAdditionalHeaders = ["User-Agent": KubeClient.userAgent]
         if let proxy = target.cluster.proxyURL, let url = URL(string: proxy), let host = url.host {

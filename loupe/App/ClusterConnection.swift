@@ -30,10 +30,35 @@ final class ClusterConnection: Identifiable {
     private(set) var serverVersion: String?
     private(set) var namespaces: [String] = []
     private(set) var warnings: [String] = []
-    private(set) var metricsAvailable = false
     private(set) var nodeMetrics: [String: NodeMetrics] = [:]
     private(set) var podMetrics: [String: PodMetrics] = [:]
     private(set) var helmAvailable = false
+
+    /// Whether the cluster serves `metrics.k8s.io`, which decides what
+    /// `.automatic` resolves to.
+    private(set) var metricsServerAvailable = false
+    private(set) var metricsSettings = MetricsSettings()
+    /// What usage numbers are actually being read from, after resolving
+    /// `.automatic` against what this cluster offers.
+    private(set) var metricsSource: MetricsSource = .off
+    /// Why the chosen source is not producing numbers, when it is not.
+    private(set) var metricsError: String?
+
+    enum MetricsSource: Equatable {
+        case off
+        case metricsServer
+        case prometheus
+
+        var label: String {
+            switch self {
+            case .off: return "no metrics"
+            case .metricsServer: return "metrics-server"
+            case .prometheus: return "prometheus"
+            }
+        }
+    }
+
+    var metricsAvailable: Bool { metricsSource != .off }
 
     /// Empty means "all namespaces". Persisted per context so a relaunch
     /// reopens the same slice of the cluster.
@@ -107,7 +132,9 @@ final class ClusterConnection: Identifiable {
             helmAvailable = catalog.supports(kind: "Secret")
             navigation = NavigationCatalog.build(catalog: catalog, includeHelm: helmAvailable)
             guard token == generation else { return }
-            metricsAvailable = catalog.groupVersions.contains { $0.hasPrefix("metrics.k8s.io/") }
+            metricsServerAvailable = catalog.groupVersions.contains { $0.hasPrefix("metrics.k8s.io/") }
+            metricsSettings = MetricsSettingsStore.load(context: target.contextName)
+            resolveMetricsSource()
             state = .ready
         } catch {
             guard token == generation else { return }
@@ -134,6 +161,9 @@ final class ClusterConnection: Identifiable {
         namespaces = []
         nodeMetrics = [:]
         podMetrics = [:]
+        metricsSource = .off
+        metricsError = nil
+        metricsServerAvailable = false
     }
 
     func reconnect() async {
@@ -206,9 +236,52 @@ final class ClusterConnection: Identifiable {
 
     // MARK: Metrics
 
+    /// Resolves the configured provider against what this cluster actually
+    /// offers. `.automatic` prefers metrics-server because it needs no setup,
+    /// and falls back to Prometheus when the API is absent — which is the whole
+    /// point of being able to point the app at Prometheus instead.
+    private func resolveMetricsSource() {
+        metricsError = nil
+        switch metricsSettings.provider {
+        case .off:
+            metricsSource = .off
+        case .metricsServer:
+            metricsSource = metricsServerAvailable ? .metricsServer : .off
+            if !metricsServerAvailable {
+                metricsError = "This cluster does not serve metrics.k8s.io — install metrics-server, "
+                    + "or point Loupe at Prometheus in Settings."
+            }
+        case .prometheus:
+            metricsSource = metricsSettings.isPrometheusConfigured ? .prometheus : .off
+            if !metricsSettings.isPrometheusConfigured {
+                metricsError = "Prometheus is selected but no endpoint is configured."
+            }
+        case .automatic:
+            if metricsServerAvailable {
+                metricsSource = .metricsServer
+            } else if metricsSettings.isPrometheusConfigured {
+                metricsSource = .prometheus
+            } else {
+                metricsSource = .off
+            }
+        }
+    }
+
+    /// Adopts settings edited in the Settings window without a reconnect.
+    func applyMetricsSettings(_ settings: MetricsSettings) {
+        metricsSettings = settings
+        MetricsSettingsStore.save(settings, context: target.contextName)
+        nodeMetrics = [:]
+        podMetrics = [:]
+        resolveMetricsSource()
+        guard state.isReady else { return }
+        startMetricsRefresh()
+    }
+
     private func startMetricsRefresh() {
-        guard metricsAvailable else { return }
         metricsTask?.cancel()
+        metricsTask = nil
+        guard metricsAvailable else { return }
         metricsTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshMetrics()
@@ -218,7 +291,38 @@ final class ClusterConnection: Identifiable {
     }
 
     func refreshMetrics() async {
-        guard let client, metricsAvailable else { return }
+        guard let client else { return }
+        switch metricsSource {
+        case .off: return
+        case .metricsServer: await refreshFromMetricsServer(client)
+        case .prometheus: await refreshFromPrometheus(client)
+        }
+    }
+
+    private func refreshFromPrometheus(_ client: KubeClient) async {
+        guard let prometheus = metricsSettings.makeClient(kube: client) else {
+            metricsError = "Prometheus is selected but no endpoint is configured."
+            return
+        }
+        do {
+            let snapshot = try await PrometheusMetrics.load(
+                client: prometheus, queries: metricsSettings.queries
+            )
+            nodeMetrics = snapshot.nodes
+            podMetrics = snapshot.pods
+            // Reaching Prometheus and getting nothing back is a real failure —
+            // usually a label convention the default queries do not match — and
+            // showing empty bars as if that were the truth would hide it.
+            metricsError = snapshot.nodes.isEmpty && snapshot.pods.isEmpty
+                ? "Prometheus answered, but none of the queries returned series the app could key by "
+                    + "node or pod. Check the queries in Settings › Metrics."
+                : nil
+        } catch {
+            metricsError = Self.describe(error)
+        }
+    }
+
+    private func refreshFromMetricsServer(_ client: KubeClient) async {
         async let nodes = try? client.get(path: "/apis/metrics.k8s.io/v1beta1/nodes")
         async let pods = try? client.get(path: "/apis/metrics.k8s.io/v1beta1/pods")
 

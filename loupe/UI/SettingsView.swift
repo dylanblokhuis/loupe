@@ -7,10 +7,14 @@ struct SettingsView: View {
         TabView {
             KubeconfigSettings()
                 .tabItem { Label("Kubeconfig", systemImage: "doc.badge.gearshape") }
+            MetricsSettingsView()
+                .tabItem { Label("Metrics", systemImage: "waveform.path.ecg") }
+            UpdateSettings()
+                .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
             AboutSettings()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 520, height: 340)
+        .frame(width: 560, height: 420)
     }
 }
 
@@ -60,6 +64,39 @@ struct KubeconfigSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+struct UpdateSettings: View {
+    @Environment(Updater.self) private var updater
+
+    var body: some View {
+        @Bindable var updater = updater
+        Form {
+            Section("Version") {
+                LabeledContent("Installed", value: Updater.installedVersion)
+                LabeledContent("Last checked", value: lastChecked)
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            }
+
+            Section("Automatic") {
+                Toggle("Check for updates automatically", isOn: $updater.automaticallyChecksForUpdates)
+                Toggle("Download updates in the background", isOn: $updater.automaticallyDownloadsUpdates)
+                    .disabled(!updater.automaticallyChecksForUpdates)
+                Text("Updates are published as GitHub releases and refused unless they carry "
+                     + "Loupe's own signature, so an update is only ever the build that came out "
+                     + "of the project's release workflow.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var lastChecked: String {
+        guard let date = updater.lastUpdateCheckDate else { return "Never" }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 }
 

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		D3A0000130418EC700036090 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = D3A0000330418EC700036090 /* SwiftTerm */; };
+		D3A0000430418EC700036090 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = D3A0000630418EC700036090 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D3A0000130418EC700036090 /* SwiftTerm in Frameworks */,
+				D3A0000430418EC700036090 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +73,7 @@
 			name = loupe;
 			packageProductDependencies = (
 				D3A0000330418EC700036090 /* SwiftTerm */,
+				D3A0000630418EC700036090 /* Sparkle */,
 			);
 			productName = loupe;
 			productReference = D36E100C30418EC400036090 /* loupe.app */;
@@ -102,6 +105,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				D3A0000230418EC700036090 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+				D3A0000530418EC700036090 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D36E100D30418EC400036090 /* Products */;
@@ -352,6 +356,14 @@
 				minimumVersion = 1.2.0;
 			};
 		};
+		D3A0000530418EC700036090 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.6;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -359,6 +371,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D3A0000230418EC700036090 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
 			productName = SwiftTerm;
+		};
+		D3A0000630418EC700036090 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D3A0000530418EC700036090 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

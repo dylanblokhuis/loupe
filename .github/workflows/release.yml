@@ -43,6 +43,22 @@ name: Release
 # The team ID is read out of the certificate, so there is nothing else to set.
 # Add the certificate secrets without notarization credentials and the build
 # will be signed but still rejected on download — the job warns about that.
+#
+# ---------------------------------------------------------------------------
+# Updates
+# ---------------------------------------------------------------------------
+# Copies already installed find new releases through Sparkle, which reads the
+# appcast.xml this workflow attaches to each release. Signing that appcast needs
+# one more secret:
+#
+#   SPARKLE_PRIVATE_KEY         the EdDSA private key held in your keychain,
+#                               written out for copying with Sparkle's
+#                                 ./bin/generate_keys -x private-key.txt
+#                               Its public half is already committed as
+#                               SUPublicEDKey in Supporting/Info.plist.
+#
+# Leave it unset and the release still builds and publishes; it just will not
+# be offered to anyone who already has the app.
 on:
   push:
     tags:
@@ -67,6 +83,9 @@ env:
   APP_NAME: loupe
   # Name used for the .dmg and the mounted volume; the bundle itself stays loupe.app.
   DISPLAY_NAME: Loupe
+  # Only used for the sign_update tool that signs the appcast enclosure. Keep it
+  # in step with the Sparkle package version in loupe.xcodeproj.
+  SPARKLE_VERSION: 2.9.6
   # Uncomment to pin the toolchain instead of taking whatever Xcode the runner
   # image defaults to. The project needs Xcode 26.2 or newer (objectVersion 77,
   # macOS 26.2 deployment target).
@@ -382,6 +401,99 @@ jobs:
           shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256"
           cat "$(basename "$DMG").sha256"
 
+      - name: Generate the changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # `gh release edit` has no --generate-notes, and Sparkle's update
+          # dialog wants the same text, so the changelog is pulled from the API
+          # once here and reused by the release body and the appcast alike.
+          changelog="$RUNNER_TEMP/changelog.md"
+          echo "CHANGELOG=$changelog" >> "$GITHUB_ENV"
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" --jq .body \
+            > "$changelog" 2>/dev/null || : > "$changelog"
+
+      # Without this step the release is still perfectly installable by hand;
+      # it is only copies already on disk that would never hear about it.
+      - name: Sign the update and write the appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DMG_FILE: ${{ steps.version.outputs.dmg }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "::warning::SPARKLE_PRIVATE_KEY is not set, so no appcast is published and installed copies will never see this release. Run Sparkle's generate_keys, then add the exported private key as that secret."
+            exit 0
+          fi
+
+          tools="$RUNNER_TEMP/sparkle"
+          mkdir -p "$tools"
+          curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz" \
+            | tar -xJ -C "$tools" bin/sign_update
+
+          # Prints the two attributes the enclosure needs, already formatted:
+          # sparkle:edSignature="..." length="..."
+          # The key goes in over stdin rather than in argv, where anything else
+          # running on the machine could read it out of the process list.
+          signature=$(printf '%s' "$SPARKLE_PRIVATE_KEY" \
+            | "$tools/bin/sign_update" --ed-key-file - "$DMG")
+
+          minimum_os=$(sed -n 's/.*MACOSX_DEPLOYMENT_TARGET = \([0-9.]*\);.*/\1/p' \
+            loupe.xcodeproj/project.pbxproj | head -1)
+
+          # Sparkle renders release notes as HTML; GitHub converts the markdown
+          # so that nothing here has to.
+          notes_html=$(gh api /markdown -f mode=gfm -f context="$GITHUB_REPOSITORY" \
+            -f text="$(cat "$CHANGELOG")" 2>/dev/null || true)
+
+          appcast="$GITHUB_WORKSPACE/dist/appcast.xml"
+          echo "APPCAST=$appcast" >> "$GITHUB_ENV"
+
+          # Written by python rather than a heredoc: the notes are built out of
+          # contributor-authored pull request titles, and this way none of that
+          # is expanded by the shell or able to break out of the XML. Every
+          # other value below is either fixed above or the version string, which
+          # the Resolve version step has already checked against a pattern.
+          SIGNATURE="$signature" MINIMUM_OS="${minimum_os:-26.2}" NOTES_HTML="$notes_html" \
+          python3 - > "$appcast" <<'PY'
+          import os
+          from email.utils import formatdate
+
+          env = os.environ
+          name = env["DISPLAY_NAME"]
+          version = env["VERSION"]
+          repo = env["GITHUB_REPOSITORY"]
+          # A literal ]]> would close the section early; splitting it across two
+          # of them is the usual way to keep the sequence intact.
+          notes = env["NOTES_HTML"].replace("]]>", "]]]]><![CDATA[>")
+
+          print(f'''<?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>{name}</title>
+              <item>
+                <title>{name} {version}</title>
+                <pubDate>{formatdate(usegmt=True)}</pubDate>
+                <sparkle:version>{env["GITHUB_RUN_NUMBER"]}</sparkle:version>
+                <sparkle:shortVersionString>{version}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>{env["MINIMUM_OS"]}</sparkle:minimumSystemVersion>
+                <sparkle:fullReleaseNotesLink>https://github.com/{repo}/releases</sparkle:fullReleaseNotesLink>
+                <description><![CDATA[{notes}]]></description>
+                <enclosure url="https://github.com/{repo}/releases/download/{env["TAG"]}/{env["DMG_FILE"]}" type="application/octet-stream" {env["SIGNATURE"]} />
+              </item>
+            </channel>
+          </rss>''')
+          PY
+
+          cat "$appcast"
+
       # Keeps the build reachable even if publishing the release fails.
       - name: Upload the .dmg as a build artifact
         uses: actions/upload-artifact@v7
@@ -420,15 +532,18 @@ jobs:
               echo "> \`\`\`"
             fi
 
-            # gh release edit has no --generate-notes, so build the changelog from
-            # the API instead and use one identical notes file on both paths.
-            changelog=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-              -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" --jq .body 2>/dev/null || true)
-            if [ -n "$changelog" ]; then
+            # Written by the Generate the changelog step, which the appcast
+            # shares so that both say the same thing.
+            if [ -s "$CHANGELOG" ]; then
               echo
-              echo "$changelog"
+              cat "$CHANGELOG"
             fi
           } > "$notes"
+
+          # The appcast is missing only when SPARKLE_PRIVATE_KEY is unset, which
+          # that step has already warned about.
+          assets=("$DMG" "$DMG.sha256")
+          [ -n "${APPCAST:-}" ] && assets+=("$APPCAST")
 
           if gh release view "$TAG" > /dev/null 2>&1; then
             # Re-running a release: refresh it rather than failing on the conflict.
@@ -436,11 +551,11 @@ jobs:
             args=(--title "$DISPLAY_NAME $VERSION" --notes-file "$notes")
             [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
             gh release edit "$TAG" "${args[@]}"
-            gh release upload "$TAG" "$DMG" "$DMG.sha256" --clobber
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
             args=(--title "$DISPLAY_NAME $VERSION" --notes-file "$notes" --target "$GITHUB_SHA")
             [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
-            gh release create "$TAG" "${args[@]}" "$DMG" "$DMG.sha256"
+            gh release create "$TAG" "${args[@]}" "${assets[@]}"
           fi
 
           echo "Published $(gh release view "$TAG" --json url --jq .url)"

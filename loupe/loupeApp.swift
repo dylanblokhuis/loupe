@@ -8,6 +8,7 @@ import SwiftUI
 @main
 struct loupeApp: App {
     @State private var model = AppModel()
+    @State private var updater = Updater()
 
     var body: some Scene {
         WindowGroup {
@@ -17,6 +18,10 @@ struct loupeApp: App {
         }
         .defaultSize(width: 1440, height: 900)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            }
             CommandGroup(after: .newItem) {
                 Button("Reload Kubeconfig") { model.reloadConfig() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
@@ -24,9 +29,9 @@ struct loupeApp: App {
             SidebarCommands()
         }
 
-        WindowGroup(for: PodLogsWindowRequest.self) { $request in
+        WindowGroup(for: LogsWindowRequest.self) { $request in
             if let request {
-                PodLogsWindow(request: request)
+                LogsWindow(request: request)
                     .environment(model)
                     .frame(minWidth: 640, minHeight: 400)
             }
@@ -36,6 +41,7 @@ struct loupeApp: App {
         Settings {
             SettingsView()
                 .environment(model)
+                .environment(updater)
         }
     }
 }
