@@ -38,9 +38,6 @@ new target to the project, which the file-system-synchronized group below will *
 - `loupe/` is a `PBXFileSystemSynchronizedRootGroup`. Any `.swift` file placed anywhere under it is
   compiled automatically — never edit `project.pbxproj` to add or move sources. The flip side: a stray or
   half-finished `.swift` file left under `loupe/` breaks the build.
-- The `JSONValue.swift`, `YAML.swift` and `main.swift` at the **repository root are stale scratch copies**
-  outside the target — `main.swift` no longer even compiles against them. The canonical sources are
-  `loupe/Core/`. Edit those; leave the root files alone.
 - Build settings that are deliberate, not accidents: the app sandbox is **off** and hardened runtime is on
   (it reads `~/.kube/config` and spawns credential plugins); App Transport Security is disabled in
   [Supporting/Info.plist](Supporting/Info.plist) because cluster certs come from private CAs that the app
