@@ -111,7 +111,7 @@ final class KubeClient: @unchecked Sendable {
         self.credentials = KubeCredentials(user: target.user, clusterServer: target.cluster.server)
     }
 
-    static let userAgent = "loupe/1.0 (macOS; +https://github.com/loupe)"
+    static let userAgent = "loupe/1.0 (macOS; +https://github.com/dylanblokhuis/loupe)"
 
     /// Releases the session's strong reference to its delegate.
     func invalidate() {
