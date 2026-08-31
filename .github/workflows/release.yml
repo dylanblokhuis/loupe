@@ -282,6 +282,9 @@ jobs:
             )
           fi
 
+          # Package plugins and macros normally need interactive "Trust & Enable"
+          # approval, which nothing on a headless runner can give — SwiftTerm's
+          # build plugin would otherwise fail plug-in validation.
           xcodebuild archive \
             -project loupe.xcodeproj \
             -scheme "$SCHEME" \
@@ -289,6 +292,8 @@ jobs:
             -destination "generic/platform=macOS" \
             -archivePath "$archive" \
             -disableAutomaticPackageResolution \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
             "${settings[@]}"
 
       - name: Export the signed app
