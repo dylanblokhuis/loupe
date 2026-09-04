@@ -54,6 +54,8 @@ struct PodSections: View {
             }
         }
 
+        PodEnvironmentSection(connection: connection, pod: pod)
+
         let volumes = pod.raw.array(at: "spec.volumes")
         if !volumes.isEmpty {
             DetailSection(title: "Volumes", systemImage: "externaldrive") {
@@ -221,19 +223,6 @@ struct ContainerCard: View {
                             }
                         }
                     }
-                    let env = container.array(at: "env")
-                    if !env.isEmpty {
-                        DetailRow(label: "Environment") {
-                            VStack(alignment: .leading, spacing: 1) {
-                                ForEach(Array(env.enumerated()), id: \.offset) { _, variable in
-                                    Text(Self.envSummary(variable))
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                }
-                            }
-                        }
-                    }
                     if let lastState = status?["lastState"]?.objectValue, !lastState.isEmpty,
                        let key = lastState.keys.first {
                         let payload = lastState[key] ?? .null
@@ -265,21 +254,6 @@ struct ContainerCard: View {
         if let period = probe.int(at: "periodSeconds") { parts.append("period=\(period)s") }
         if let failure = probe.int(at: "failureThreshold") { parts.append("failures=\(failure)") }
         return parts.joined(separator: " ")
-    }
-
-    static func envSummary(_ variable: JSONValue) -> String {
-        let name = variable.string(at: "name") ?? "?"
-        if let value = variable.string(at: "value") { return "\(name)=\(value)" }
-        if let ref = variable.value(at: "valueFrom.secretKeyRef") {
-            return "\(name)=<secret \(ref.string(at: "name") ?? "?")/\(ref.string(at: "key") ?? "?")>"
-        }
-        if let ref = variable.value(at: "valueFrom.configMapKeyRef") {
-            return "\(name)=<configmap \(ref.string(at: "name") ?? "?")/\(ref.string(at: "key") ?? "?")>"
-        }
-        if let ref = variable.string(at: "valueFrom.fieldRef.fieldPath") {
-            return "\(name)=<field \(ref)>"
-        }
-        return "\(name)=<computed>"
     }
 }
 
