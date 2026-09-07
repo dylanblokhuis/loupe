@@ -55,7 +55,7 @@ struct loupeApp: App {
         WindowGroup {
             ContentView()
                 .environment(model)
-                .frame(minWidth: 1000, minHeight: 620)
+                .frame(minWidth: ContentView.minimumWindowWidth, minHeight: 620)
         }
         .defaultSize(width: 1440, height: 900)
         .commands {

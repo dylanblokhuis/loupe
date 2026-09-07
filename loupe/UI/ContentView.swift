@@ -42,29 +42,68 @@ struct ContentView: View {
         )
     }
 
+    /// Column minimums, kept together because the window minimum is their sum.
+    ///
+    /// `.inspector` adds no third column on macOS: it wraps the whole split view
+    /// in a second AppKit split, and when that outer split works out how far the
+    /// inspector may grow it counts the sidebar as collapsible. Left alone, the
+    /// inspector can be dragged until only the detail's minimum is left, at
+    /// which point AppKit collapses the sidebar — or shoves it off the left
+    /// edge, its toggle button jumping into the detail toolbar. So the
+    /// inspector's maximum is worked out from the window instead, leaving room
+    /// for the sidebar and a usable detail column.
+    static let sidebarMinimumWidth: CGFloat = 220
+    static let detailMinimumWidth: CGFloat = 480
+    static let inspectorMinimumWidth: CGFloat = 380
+    static var minimumWindowWidth: CGFloat {
+        sidebarMinimumWidth + detailMinimumWidth + inspectorMinimumWidth
+    }
+
+    private static func inspectorMaximumWidth(for windowWidth: CGFloat) -> CGFloat {
+        let spare = windowWidth - sidebarMinimumWidth - detailMinimumWidth
+        return max(inspectorMinimumWidth, min(900, spare))
+    }
+
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(selection: selection)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 340)
-        } detail: {
-            detail
-        }
-        .inspector(isPresented: Binding(get: { inspection != nil }, set: { if !$0 { inspection = nil } })) {
-            if let inspection, let connection = model.activeConnection {
-                ObjectInspector(connection: connection, target: inspection) { self.inspection = nil }
-                    // Without a distinct identity per object SwiftUI keeps the
-                    // first inspector's @State, so selecting another row would
-                    // leave Delete and Edit pointed at the previous object.
-                    .id(inspection.id)
-                    .inspectorColumnWidth(min: 380, ideal: 520, max: 900)
+        GeometryReader { geometry in
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                SidebarView(selection: selection)
+                    .navigationSplitViewColumnWidth(min: Self.sidebarMinimumWidth, ideal: 250, max: 340)
+            } detail: {
+                // The detail column's minimum would otherwise be whatever its
+                // current page needs — the overview's fixed-width node rows and
+                // the Helm table both want more than the inspector arithmetic
+                // reserves — and AppKit meets an oversized minimum by collapsing
+                // the sidebar. Reading the width off a GeometryReader hides the
+                // content's minimum from the split view, so a page that needs
+                // more than the column has clips instead.
+                GeometryReader { column in
+                    detail
+                        .frame(width: column.size.width, height: column.size.height)
+                        .clipped()
+                }
             }
-        }
-        .onChange(of: model.activeContextName) { _, newValue in
-            inspection = nil
-            guard let newValue, selections[newValue] == nil else { return }
-            var updated = selections
-            updated[newValue] = .clusterOverview
-            selections = updated
+            .inspector(isPresented: Binding(get: { inspection != nil }, set: { if !$0 { inspection = nil } })) {
+                if let inspection, let connection = model.activeConnection {
+                    ObjectInspector(connection: connection, target: inspection) { self.inspection = nil }
+                        // Without a distinct identity per object SwiftUI keeps the
+                        // first inspector's @State, so selecting another row would
+                        // leave Delete and Edit pointed at the previous object.
+                        .id(inspection.id)
+                        .inspectorColumnWidth(
+                            min: Self.inspectorMinimumWidth,
+                            ideal: 520,
+                            max: Self.inspectorMaximumWidth(for: geometry.size.width)
+                        )
+                }
+            }
+            .onChange(of: model.activeContextName) { _, newValue in
+                inspection = nil
+                guard let newValue, selections[newValue] == nil else { return }
+                var updated = selections
+                updated[newValue] = .clusterOverview
+                selections = updated
+            }
         }
     }
 
