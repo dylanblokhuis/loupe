@@ -85,7 +85,9 @@ struct ContentView: View {
             }
             .inspector(isPresented: Binding(get: { inspection != nil }, set: { if !$0 { inspection = nil } })) {
                 if let inspection, let connection = model.activeConnection {
-                    ObjectInspector(connection: connection, target: inspection) { self.inspection = nil }
+                    ObjectInspector(connection: connection, target: inspection, onInspect: { self.inspection = $0 }) {
+                        self.inspection = nil
+                    }
                         // Without a distinct identity per object SwiftUI keeps the
                         // first inspector's @State, so selecting another row would
                         // leave Delete and Edit pointed at the previous object.

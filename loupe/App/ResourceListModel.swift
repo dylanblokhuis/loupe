@@ -10,6 +10,8 @@ import Observation
 @Observable
 final class ResourceListModel {
     let resource: APIResource
+    /// Keep relationship filters identical on every list page and watch.
+    private let fieldSelector: String?
     private weak var connection: ClusterConnection?
 
     private(set) var columns: [ResourceColumn] = []
@@ -50,9 +52,10 @@ final class ResourceListModel {
     /// pages this client cannot decode.
     private static let maximumPages = 60
 
-    init(resource: APIResource, connection: ClusterConnection) {
+    init(resource: APIResource, connection: ClusterConnection, fieldSelector: String? = nil) {
         self.resource = resource
         self.connection = connection
+        self.fieldSelector = fieldSelector
     }
 
     deinit {
@@ -159,6 +162,7 @@ final class ResourceListModel {
                 URLQueryItem(name: "limit", value: String(Self.pageSize)),
             ]
             if let continueToken { query.append(URLQueryItem(name: "continue", value: continueToken)) }
+            if let fieldSelector { query.append(URLQueryItem(name: "fieldSelector", value: fieldSelector)) }
 
             var request = KubeRequest.get(resource.listPath(namespace: namespace), query: query)
             request.accept = KubeAccept.table
@@ -321,6 +325,7 @@ final class ResourceListModel {
             URLQueryItem(name: "allowWatchBookmarks", value: "true"),
         ]
         if let cursor { query.append(URLQueryItem(name: "resourceVersion", value: cursor)) }
+        if let fieldSelector { query.append(URLQueryItem(name: "fieldSelector", value: fieldSelector)) }
 
         var request = KubeRequest.get(resource.listPath(namespace: namespace), query: query)
         request.accept = KubeAccept.table

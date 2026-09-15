@@ -5,6 +5,7 @@ import SwiftUI
 struct ObjectInspector: View {
     let connection: ClusterConnection
     let target: InspectionTarget
+    var onInspect: (InspectionTarget) -> Void
     var onClose: () -> Void
 
     @Environment(AppModel.self) private var model
@@ -16,9 +17,11 @@ struct ObjectInspector: View {
     @State private var pendingDeletion = false
     @State private var isForwarding = false
 
-    init(connection: ClusterConnection, target: InspectionTarget, onClose: @escaping () -> Void) {
+    init(connection: ClusterConnection, target: InspectionTarget,
+         onInspect: @escaping (InspectionTarget) -> Void, onClose: @escaping () -> Void) {
         self.connection = connection
         self.target = target
+        self.onInspect = onInspect
         self.onClose = onClose
         self._tab = State(wrappedValue: target.initialTab)
         self._object = State(wrappedValue: target.object)
@@ -114,7 +117,7 @@ struct ObjectInspector: View {
         switch tab {
         case .overview:
             ScrollView {
-                ObjectOverview(connection: connection, object: object, runner: runner)
+                ObjectOverview(connection: connection, object: object, runner: runner, onInspect: onInspect)
                     .padding(14)
             }
         case .yaml:

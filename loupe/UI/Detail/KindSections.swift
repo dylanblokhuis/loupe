@@ -259,9 +259,93 @@ struct ContainerCard: View {
 
 // MARK: - Node
 
+/// Node membership comes from scheduling, not ownership or labels. The shared
+/// list model keeps the server-side filter through paging and watch restarts.
+struct NodePodsSection: View {
+    let connection: ClusterConnection
+    let resource: APIResource
+    var onInspect: (InspectionTarget) -> Void
+    @State private var model: ResourceListModel
+
+    init(connection: ClusterConnection, node: KubeObject, resource: APIResource,
+         onInspect: @escaping (InspectionTarget) -> Void) {
+        self.connection = connection
+        self.resource = resource
+        self.onInspect = onInspect
+        self._model = State(wrappedValue: ResourceListModel(
+            resource: resource, connection: connection, fieldSelector: "spec.nodeName=\(node.name)"
+        ))
+    }
+
+    var body: some View {
+        DetailSection(title: "Pods", systemImage: "cube") {
+            HStack {
+                Text(connection.effectiveNamespaces == nil ? "All namespaces" : "Selected namespaces")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .disabled(model.isLoading)
+                    .help("Refresh pods on this node")
+            }
+            if model.isLoading {
+                ProgressView().controlSize(.small)
+            } else {
+                if let message = model.errorMessage {
+                    Banner(message: message, tint: .red) { model.refresh() }
+                }
+                if model.rows.isEmpty, model.errorMessage == nil {
+                    Text("No pods on this node in the current namespace scope.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else if !model.rows.isEmpty {
+                    Text("\(model.rows.count) pods\(model.truncated ? " (partial list)" : "")")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    ForEach(model.displayedRows(columns: model.displayColumns)) { row in
+                        Button {
+                            onInspect(InspectionTarget(object: row.object, resource: resource))
+                        } label: {
+                            HStack(spacing: 6) {
+                                HealthDot(health: row.object.health)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(row.object.name)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.tint)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Text(row.object.namespace ?? "—")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 4)
+                                Text(row.object.raw.string(at: "status.phase") ?? "—")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 3)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Inspect \(row.object.namespace ?? "")/\(row.object.name)")
+                    }
+                }
+            }
+        }
+        .task(id: connection.effectiveNamespaces) { model.start() }
+        .onDisappear { model.stop() }
+    }
+}
+
 struct NodeSections: View {
     let connection: ClusterConnection
     let node: KubeObject
+    var onInspect: (InspectionTarget) -> Void
 
     private var metrics: NodeMetrics? { connection.nodeMetrics[node.name] }
 
@@ -277,6 +361,11 @@ struct NodeSections: View {
             ForEach(Array(node.raw.array(at: "status.addresses").enumerated()), id: \.offset) { _, address in
                 DetailRow(address.string(at: "type") ?? "Address", address.string(at: "address") ?? "—")
             }
+        }
+
+        if let resource = connection.catalog.resource(apiVersion: "v1", kind: "Pod") {
+            NodePodsSection(connection: connection, node: node, resource: resource, onInspect: onInspect)
+                .id(node.id)
         }
 
         DetailSection(title: "Capacity", systemImage: "gauge.with.dots.needle.50percent") {
