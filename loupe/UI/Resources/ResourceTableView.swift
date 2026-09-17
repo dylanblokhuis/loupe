@@ -40,6 +40,12 @@ struct DisplayColumn: Identifiable, Hashable {
 /// the table is drawn directly: a header row plus a `List` of rows sharing one
 /// set of computed widths.
 struct ResourceTableView: View {
+    @AppStorage(TableTextSize.storageKey) private var textSize = TableTextSize.defaultSize
+
+    private var textScale: CGFloat {
+        CGFloat(TableTextSize.clamped(textSize) / TableTextSize.defaultSize)
+    }
+
     let columns: [DisplayColumn]
     let rows: [ResourceRow]
     @Binding var selection: String?
@@ -54,14 +60,16 @@ struct ResourceTableView: View {
     var body: some View {
         GeometryReader { geometry in
             let widths = Self.widths(
-                for: columns, rows: rows, available: geometry.size.width - 24, showsHealth: showsHealth
+                for: columns, rows: rows, available: geometry.size.width - 24,
+                showsHealth: showsHealth, textScale: textScale
             )
             VStack(spacing: 0) {
                 header(widths: widths)
                 Divider()
                 List(selection: $selection) {
                     ForEach(rows) { row in
-                        RowView(row: row, columns: columns, widths: widths, showsHealth: showsHealth)
+                        RowView(row: row, columns: columns, widths: widths,
+                                showsHealth: showsHealth, textScale: textScale)
                             .tag(row.id)
                             .contentShape(Rectangle())
                             // A `List` alone opens a row only on a double click,
@@ -78,7 +86,7 @@ struct ResourceTableView: View {
                 }
                 .listStyle(.inset)
                 .alternatingRowBackgrounds(.enabled)
-                .environment(\.defaultMinListRowHeight, 24)
+                .environment(\.defaultMinListRowHeight, 24 * textScale)
             }
         }
     }
@@ -96,12 +104,12 @@ struct ResourceTableView: View {
                 } label: {
                     HStack(spacing: 3) {
                         Text(column.title)
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(.system(size: 10.5 * textScale, weight: .semibold))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         if sortColumn == column.id {
                             Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 7, weight: .bold))
+                                .font(.system(size: 7 * textScale, weight: .bold))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 0)
@@ -125,10 +133,11 @@ struct ResourceTableView: View {
         for columns: [DisplayColumn],
         rows: [ResourceRow],
         available: CGFloat,
-        showsHealth: Bool = true
+        showsHealth: Bool = true,
+        textScale: CGFloat = 1
     ) -> [CGFloat] {
         guard !columns.isEmpty else { return [] }
-        let characterWidth: CGFloat = 6.9
+        let characterWidth: CGFloat = 6.9 * textScale
         let sampled = rows.prefix(200)
 
         var natural: [CGFloat] = columns.enumerated().map { index, column in
@@ -174,6 +183,7 @@ struct ResourceTableView: View {
         let columns: [DisplayColumn]
         let widths: [CGFloat]
         let showsHealth: Bool
+        let textScale: CGFloat
 
         var body: some View {
             HStack(spacing: 8) {
@@ -186,7 +196,7 @@ struct ResourceTableView: View {
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 20)
+            .frame(height: 20 * textScale)
         }
 
         @ViewBuilder
@@ -198,28 +208,28 @@ struct ResourceTableView: View {
                         HealthDot(health: row.object.health, size: row.object.health == .unknown ? 5 : 8)
                     }
                     Text(text)
-                        .font(.system(size: 11.5))
+                        .font(.system(size: 11.5 * textScale))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if row.object.isTerminating {
                         Text("terminating")
-                            .font(.system(size: 9, weight: .medium))
+                            .font(.system(size: 9 * textScale, weight: .medium))
                             .foregroundStyle(.purple)
                     }
                 }
             } else if column.title.caseInsensitiveCompare("Age") == .orderedSame {
                 AgeText(date: row.object.creationTimestamp)
-                    .font(.system(size: 11))
+                    .font(.system(size: 11 * textScale))
                     .foregroundStyle(.secondary)
             } else if case .usage = column.source {
                 Text(text.isEmpty ? "—" : text)
-                    .font(.system(size: 11))
+                    .font(.system(size: 11 * textScale))
                     .monospacedDigit()
                     .foregroundStyle(text.isEmpty ? .tertiary : .secondary)
                     .lineLimit(1)
             } else {
                 Text(text.isEmpty ? "—" : text)
-                    .font(.system(size: 11))
+                    .font(.system(size: 11 * textScale))
                     .foregroundStyle(tint(for: column, value: text) ?? .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)

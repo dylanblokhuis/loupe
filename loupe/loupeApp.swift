@@ -68,6 +68,7 @@ struct loupeApp: App {
                     .keyboardShortcut("r", modifiers: [.command, .shift])
             }
             SidebarCommands()
+            TableTextSizeCommands()
         }
 
         WindowGroup(for: LogsWindowRequest.self) { $request in
