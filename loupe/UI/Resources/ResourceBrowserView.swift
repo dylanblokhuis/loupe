@@ -5,6 +5,8 @@ struct ResourceBrowserView: View {
     let connection: ClusterConnection
     let resource: APIResource
     @Binding var inspection: InspectionTarget?
+    let nodeNameFilter: String?
+    var onClearNodeFilter: () -> Void
 
     @Environment(AppModel.self) private var app
 
@@ -17,16 +19,36 @@ struct ResourceBrowserView: View {
     @State private var forwardTarget: ResourceRow?
     @State private var pendingDrain: ResourceRow?
 
-    init(connection: ClusterConnection, resource: APIResource, inspection: Binding<InspectionTarget?>) {
+    init(connection: ClusterConnection, resource: APIResource, inspection: Binding<InspectionTarget?>,
+         nodeNameFilter: String? = nil, onClearNodeFilter: @escaping () -> Void = {}) {
         self.connection = connection
         self.resource = resource
         self._inspection = inspection
-        self._model = State(wrappedValue: ResourceListModel(resource: resource, connection: connection))
+        self.nodeNameFilter = nodeNameFilter
+        self.onClearNodeFilter = onClearNodeFilter
+        self._model = State(wrappedValue: ResourceListModel(
+            resource: resource, connection: connection,
+            fieldSelector: nodeNameFilter.map { "spec.nodeName=\($0)" }
+        ))
     }
 
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
+            if let nodeNameFilter {
+                HStack(spacing: 8) {
+                    Label("Node: \(nodeNameFilter)", systemImage: "cpu")
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Clear filter") { onClearNodeFilter() }
+                        .font(.system(size: 11))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.bar)
+            }
             if let message = runner.errorMessage {
                 Banner(message: message, tint: .red) { runner.errorMessage = nil }
             }
@@ -226,8 +248,11 @@ struct ResourceBrowserView: View {
 
     private var scopeDescription: String? {
         guard resource.namespaced else { return nil }
-        guard let namespaces = connection.effectiveNamespaces else { return "Searched every namespace." }
-        return "Searched \(namespaces.joined(separator: ", "))."
+        let node = nodeNameFilter.map { " on node \($0)" } ?? ""
+        guard let namespaces = connection.effectiveNamespaces else {
+            return "Searched every namespace\(node)."
+        }
+        return "Searched \(namespaces.joined(separator: ", "))\(node)."
     }
 
     @ToolbarContentBuilder

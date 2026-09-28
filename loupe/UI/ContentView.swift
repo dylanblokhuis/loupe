@@ -7,6 +7,9 @@ struct ContentView: View {
     /// relaunching — returns you where you were.
     @AppStorage("loupe.selections") private var storedSelections = ""
     @State private var inspection: InspectionTarget?
+    @State private var logsTarget: InspectionTarget?
+    /// A node drill-down is temporary; the persisted sidebar selection stays Pods.
+    @State private var nodePodsFilter: String?
 
     private var selections: [String: NavDestination] {
         get {
@@ -38,6 +41,34 @@ struct ContentView: View {
                 updated[context] = newValue
                 selections = updated
                 inspection = nil
+                logsTarget = nil
+                var staysOnPods = false
+                if let newValue, case .resource(let key) = newValue,
+                   key == model.activeConnection?.catalog.resource(apiVersion: "v1", kind: "Pod")?.stableKey {
+                    staysOnPods = true
+                }
+                // Keep a node drill-down while the Pods row becomes selected.
+                if !staysOnPods { nodePodsFilter = nil }
+            }
+        )
+    }
+
+    /// A request for Logs opens the bottom drawer, whether it came from the
+    /// inspector's tab strip or a resource's context menu.
+    private var routedInspection: Binding<InspectionTarget?> {
+        Binding(
+            get: { inspection },
+            set: { target in
+                guard let target else {
+                    inspection = nil
+                    return
+                }
+                if target.initialTab == .logs {
+                    logsTarget = target
+                    inspection = InspectionTarget(object: target.object, resource: target.resource)
+                } else {
+                    inspection = target
+                }
             }
         )
     }
@@ -66,41 +97,90 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            NavigationSplitView(columnVisibility: $columnVisibility) {
-                SidebarView(selection: selection)
-                    .navigationSplitViewColumnWidth(min: Self.sidebarMinimumWidth, ideal: 250, max: 340)
-            } detail: {
-                // The detail column's minimum would otherwise be whatever its
-                // current page needs — the overview's fixed-width node rows and
-                // the Helm table both want more than the inspector arithmetic
-                // reserves — and AppKit meets an oversized minimum by collapsing
-                // the sidebar. Reading the width off a GeometryReader hides the
-                // content's minimum from the split view, so a page that needs
-                // more than the column has clips instead.
-                GeometryReader { column in
-                    detail
-                        .frame(width: column.size.width, height: column.size.height)
-                        .clipped()
-                }
-            }
-            .inspector(isPresented: Binding(get: { inspection != nil }, set: { if !$0 { inspection = nil } })) {
-                if let inspection, let connection = model.activeConnection {
-                    ObjectInspector(connection: connection, target: inspection, onInspect: { self.inspection = $0 }) {
-                        self.inspection = nil
+            VSplitView {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    SidebarView(selection: selection)
+                        .navigationSplitViewColumnWidth(min: Self.sidebarMinimumWidth, ideal: 250, max: 340)
+                } detail: {
+                    // The detail column's minimum would otherwise be whatever its
+                    // current page needs — the overview's fixed-width node rows and
+                    // the Helm table both want more than the inspector arithmetic
+                    // reserves — and AppKit meets an oversized minimum by collapsing
+                    // the sidebar. Reading the width off a GeometryReader hides the
+                    // content's minimum from the split view, so a page that needs
+                    // more than the column has clips instead.
+                    GeometryReader { column in
+                        detail
+                            .frame(width: column.size.width, height: column.size.height)
+                            .clipped()
                     }
-                        // Without a distinct identity per object SwiftUI keeps the
-                        // first inspector's @State, so selecting another row would
-                        // leave Delete and Edit pointed at the previous object.
-                        .id(inspection.id)
-                        .inspectorColumnWidth(
-                            min: Self.inspectorMinimumWidth,
-                            ideal: 520,
-                            max: Self.inspectorMaximumWidth(for: geometry.size.width)
+                }
+                .inspector(isPresented: Binding(get: { inspection != nil }, set: { if !$0 { inspection = nil } })) {
+                    if let inspection, let connection = model.activeConnection {
+                        ObjectInspector(
+                            connection: connection,
+                            target: inspection,
+                            onInspect: { routedInspection.wrappedValue = $0 },
+                            onBrowseNodePods: { nodeName in
+                                guard let pods = connection.catalog.resource(apiVersion: "v1", kind: "Pod") else {
+                                    return
+                                }
+                                selection.wrappedValue = .resource(pods.stableKey)
+                                nodePodsFilter = nodeName
+                            },
+                            onShowLogs: { object in
+                                logsTarget = InspectionTarget(object: object, resource: inspection.resource)
+                            },
+                            onClose: { self.inspection = nil }
                         )
+                            // Without a distinct identity per object SwiftUI keeps the
+                            // first inspector's @State, so selecting another row would
+                            // leave Delete and Edit pointed at the previous object.
+                            .id(inspection.id)
+                            .inspectorColumnWidth(
+                                min: Self.inspectorMinimumWidth,
+                                ideal: 520,
+                                max: Self.inspectorMaximumWidth(for: geometry.size.width)
+                            )
+                    }
+                }
+                .frame(minHeight: 300)
+
+                if let logsTarget, let connection = model.activeConnection,
+                   let scope = LogScope.best(for: logsTarget.object) {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "text.alignleft")
+                            Text("Logs")
+                                .fontWeight(.semibold)
+                            Text("\(logsTarget.object.kind) · \(logsTarget.object.name)")
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Button {
+                                self.logsTarget = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Close logs")
+                        }
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        Divider()
+                        LogsView(connection: connection, scope: scope)
+                            .id("\(connection.id)|\(logsTarget.object.id)")
+                    }
+                    .frame(minHeight: 180, idealHeight: 320)
                 }
             }
             .onChange(of: model.activeContextName) { _, newValue in
                 inspection = nil
+                logsTarget = nil
+                nodePodsFilter = nil
                 guard let newValue, selections[newValue] == nil else { return }
                 var updated = selections
                 updated[newValue] = .clusterOverview
@@ -115,7 +195,9 @@ struct ContentView: View {
             ClusterDetailView(
                 connection: connection,
                 destination: selection.wrappedValue,
-                inspection: $inspection
+                nodePodsFilter: nodePodsFilter,
+                onClearNodePodsFilter: { nodePodsFilter = nil },
+                inspection: routedInspection
             )
             .id(connection.id)
         } else {
@@ -128,11 +210,11 @@ struct ContentView: View {
 struct InspectionTarget: Identifiable, Equatable {
     var object: KubeObject
     var resource: APIResource?
-    /// Opens straight to a specific tab, e.g. logs from a pod's context menu.
+    /// Opens a specific inspector tab, or routes Logs to the bottom drawer.
     var initialTab: InspectorTab = .overview
 
-    /// Includes the tab so asking for the same pod's logs after its overview
-    /// re-seeds the inspector on the tab that was requested.
+    /// Includes the requested tab so a new inspector selection starts on the
+    /// intended view; Logs requests are routed to the drawer first.
     var id: String { "\(object.id)|\(initialTab.rawValue)" }
 }
 
@@ -160,6 +242,8 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 struct ClusterDetailView: View {
     let connection: ClusterConnection
     let destination: NavDestination?
+    let nodePodsFilter: String?
+    var onClearNodePodsFilter: () -> Void
     @Binding var inspection: InspectionTarget?
 
     var body: some View {
@@ -203,8 +287,12 @@ struct ClusterDetailView: View {
             PortForwardListView(connection: connection)
         case .resource(let key):
             if let resource = connection.catalog.resource(forStableKey: key) {
-                ResourceBrowserView(connection: connection, resource: resource, inspection: $inspection)
-                    .id(key)
+                ResourceBrowserView(
+                    connection: connection, resource: resource, inspection: $inspection,
+                    nodeNameFilter: resource.kind == "Pod" ? nodePodsFilter : nil,
+                    onClearNodeFilter: onClearNodePodsFilter
+                )
+                    .id("\(key)|\(nodePodsFilter ?? "")")
             } else {
                 EmptyStateView(
                     title: "Resource unavailable",

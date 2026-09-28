@@ -10,6 +10,7 @@ struct ObjectOverview: View {
     /// banner as the actions menu.
     let runner: ActionRunner
     var onInspect: (InspectionTarget) -> Void
+    var onBrowseNodePods: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -99,7 +100,10 @@ struct ObjectOverview: View {
     private var kindSection: some View {
         switch object.kind {
         case "Pod": PodSections(connection: connection, pod: object)
-        case "Node": NodeSections(connection: connection, node: object, onInspect: onInspect)
+        case "Node": NodeSections(
+            connection: connection, node: object,
+            onInspect: onInspect, onBrowsePods: onBrowseNodePods
+        )
         case "Service": ServiceSections(connection: connection, service: object)
         case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "ReplicationController":
             WorkloadSections(connection: connection, workload: object)

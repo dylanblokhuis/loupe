@@ -1,11 +1,13 @@
 import SwiftUI
 
 /// The right-hand inspector: a live view of a single object with tabs for its
-/// summary, YAML, events and — for pods — logs and a shell.
+/// summary, YAML, events and — for pods — a shell. Logs opens the bottom drawer.
 struct ObjectInspector: View {
     let connection: ClusterConnection
     let target: InspectionTarget
     var onInspect: (InspectionTarget) -> Void
+    var onBrowseNodePods: (String) -> Void
+    var onShowLogs: (KubeObject) -> Void
     var onClose: () -> Void
 
     @Environment(AppModel.self) private var model
@@ -18,12 +20,17 @@ struct ObjectInspector: View {
     @State private var isForwarding = false
 
     init(connection: ClusterConnection, target: InspectionTarget,
-         onInspect: @escaping (InspectionTarget) -> Void, onClose: @escaping () -> Void) {
+         onInspect: @escaping (InspectionTarget) -> Void,
+         onBrowseNodePods: @escaping (String) -> Void,
+         onShowLogs: @escaping (KubeObject) -> Void,
+         onClose: @escaping () -> Void) {
         self.connection = connection
         self.target = target
         self.onInspect = onInspect
+        self.onBrowseNodePods = onBrowseNodePods
+        self.onShowLogs = onShowLogs
         self.onClose = onClose
-        self._tab = State(wrappedValue: target.initialTab)
+        self._tab = State(wrappedValue: target.initialTab == .logs ? .overview : target.initialTab)
         self._object = State(wrappedValue: target.object)
     }
 
@@ -49,7 +56,16 @@ struct ObjectInspector: View {
         VStack(spacing: 0) {
             header
             Divider()
-            Picker("", selection: $tab) {
+            Picker("", selection: Binding(
+                get: { tab },
+                set: { selected in
+                    if selected == .logs {
+                        onShowLogs(object)
+                    } else {
+                        tab = selected
+                    }
+                }
+            )) {
                 ForEach(availableTabs) { item in
                     Label(item.rawValue, systemImage: item.symbol).tag(item)
                 }
@@ -115,23 +131,18 @@ struct ObjectInspector: View {
     @ViewBuilder
     private var content: some View {
         switch tab {
-        case .overview:
+        case .overview, .logs:
             ScrollView {
-                ObjectOverview(connection: connection, object: object, runner: runner, onInspect: onInspect)
+                ObjectOverview(
+                    connection: connection, object: object, runner: runner,
+                    onInspect: onInspect, onBrowseNodePods: onBrowseNodePods
+                )
                     .padding(14)
             }
         case .yaml:
             YAMLDocumentView(text: object.presentableYAML)
         case .events:
             ObjectEventsView(connection: connection, object: object)
-        case .logs:
-            if let logScope {
-                LogsView(connection: connection, scope: logScope)
-                    // Identity follows the object, not the watch event that
-                    // last refreshed it, so live updates do not restart the
-                    // streams and throw away everything already on screen.
-                    .id(object.id)
-            }
         case .shell:
             PodTerminalView(connection: connection, pod: object)
         }

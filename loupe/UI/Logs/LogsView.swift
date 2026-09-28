@@ -52,7 +52,12 @@ struct LogsView: View {
     /// not just a display limit.
     @State private var podLimit = 10
     @State private var filter = ""
-    @State private var lines: [LogLine] = []
+    @State private var appliedFilter = ""
+    @State private var chunks: [LineChunk] = []
+    @State private var visibleChunks: [LineChunk] = []
+    @State private var lineCount = 0
+    @State private var visibleLineCount = 0
+    @State private var longestVisibleLine = 0
     @State private var sources: [LogSource] = []
     @State private var hiddenSources: Set<Int> = []
     @State private var podsFound = 0
@@ -65,6 +70,15 @@ struct LogsView: View {
     @State private var runToken = 0
 
     private static let maximumLines = 20_000
+    private static let chunkSize = 100
+
+    /// SwiftUI only diffs the visible groups, instead of twenty thousand
+    /// individual rows, when a streaming batch reaches the tail.
+    private struct LineChunk: Identifiable {
+        let id: Int
+        var lines: [LogLine] = []
+        var longestTextLength = 0
+    }
 
     init(connection: ClusterConnection, scope: LogScope, isDetached: Bool = false) {
         self.connection = connection
@@ -103,14 +117,13 @@ struct LogsView: View {
         sources.enumerated().filter { !hiddenSources.contains($0.offset) }.map(\.element)
     }
 
-    private var filtered: [LogLine] {
-        let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !needle.isEmpty || !hiddenSources.isEmpty else { return lines }
-        return lines.filter { line in
-            guard !hiddenSources.contains(line.source) else { return false }
-            guard !needle.isEmpty else { return true }
-            return line.text.lowercased().contains(needle)
-        }
+    private var filterNeedle: String {
+        appliedFilter.trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    private func isVisible(_ line: LogLine, needle: String) -> Bool {
+        !hiddenSources.contains(line.source)
+            && (needle.isEmpty || line.text.lowercased().contains(needle))
     }
 
     /// The pod column only earns its width once more than one thing is being
@@ -137,8 +150,7 @@ struct LogsView: View {
 
     private var contentWidth: CGFloat {
         let prefix = (showsSourceColumn ? sourceColumnWidth + 1 : 0) + (timestamps ? 25 : 0)
-        let longest = filtered.suffix(2_000).map(\.text.count).max() ?? 0
-        return 24 + CGFloat(min(longest + prefix, 4_000)) * 6.63
+        return 24 + CGFloat(min(longestVisibleLine + prefix, 4_000)) * 6.63
     }
 
     private var streamKey: String {
@@ -226,7 +238,7 @@ struct LogsView: View {
             .help("Save logs to a file")
 
             Button {
-                lines = []
+                clearLines()
             } label: {
                 Image(systemName: "trash")
             }
@@ -270,15 +282,18 @@ struct LogsView: View {
         ScrollViewReader { proxy in
             ScrollView(wrap ? .vertical : [.vertical, .horizontal]) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(filtered) { line in
-                        styled(line)
-                            .font(.system(size: 11, design: .monospaced))
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: !wrap, vertical: false)
-                            .frame(maxWidth: wrap ? .infinity : nil, alignment: .leading)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 0.5)
-                            .id(line.id)
+                    ForEach(visibleChunks) { chunk in
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(chunk.lines) { line in
+                                styled(line)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: !wrap, vertical: false)
+                                    .frame(maxWidth: wrap ? .infinity : nil, alignment: .leading)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 0.5)
+                            }
+                        }
                     }
                     Color.clear.frame(width: 1, height: 1).id("bottom")
                 }
@@ -289,13 +304,11 @@ struct LogsView: View {
                 .frame(width: wrap ? nil : contentWidth, alignment: .leading)
             }
             .background(Color(nsColor: .textBackgroundColor))
-            .onChange(of: filtered.count) { _, _ in
+            .onChange(of: visibleChunks.last?.lines.last?.id) { _, _ in
                 guard autoScroll else { return }
                 // Anchor on the leading edge so following the tail does not
                 // also drag the horizontal scroll to the centre of long lines.
-                withAnimation(.linear(duration: 0.1)) {
-                    proxy.scrollTo("bottom", anchor: UnitPoint(x: 0, y: 1))
-                }
+                proxy.scrollTo("bottom", anchor: UnitPoint(x: 0, y: 1))
             }
         }
     }
@@ -330,7 +343,7 @@ struct LogsView: View {
             } else {
                 Text("stopped").font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            Text("\(filtered.count) lines").font(.system(size: 10)).foregroundStyle(.secondary)
+            Text("\(visibleLineCount) lines").font(.system(size: 10)).foregroundStyle(.secondary)
             if scope.isWorkload, podsFound > 0 {
                 Text(podsFound > podLimit
                      ? "first \(podLimit) of \(podsFound) pods"
@@ -362,6 +375,14 @@ struct LogsView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(.bar)
+        .onChange(of: hiddenSources) { _, _ in rebuildVisibleChunks() }
+        .task(id: filter) {
+            // A large history only needs one filter pass after typing pauses.
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            appliedFilter = filter
+            rebuildVisibleChunks()
+        }
     }
 
     private var failingSources: Int { sources.count { $0.error != nil } }
@@ -369,12 +390,12 @@ struct LogsView: View {
     // MARK: Streaming
 
     /// Runs inside `.task(id:)` so SwiftUI owns cancellation: switching
-    /// container, toggling follow, or closing the inspector tears every stream
+    /// container, toggling follow, or closing the log view tears every stream
     /// down without any bookkeeping of our own.
     private func stream() async {
         guard let client = connection.client else { return }
 
-        lines = []
+        clearLines()
         sources = []
         hiddenSources = []
         podsFound = 0
@@ -403,7 +424,7 @@ struct LogsView: View {
                 // pod land in one batch and can be merged in timestamp order.
                 var first = true
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: first ? .milliseconds(700) : .milliseconds(120))
+                    try? await Task.sleep(for: first ? .milliseconds(700) : .milliseconds(250))
                     first = false
                     flush()
                 }
@@ -569,29 +590,117 @@ struct LogsView: View {
         let start = accumulator.nextIndex
         accumulator.nextIndex += parsed.count
         var appended: [LogLine] = []
+        var sourceCounts: [Int: Int] = [:]
         appended.reserveCapacity(parsed.count)
         for (offset, entry) in parsed.enumerated() {
             var line = entry.line
             line.index = start + offset
             appended.append(line)
-            if sources.indices.contains(line.source) { sources[line.source].lineCount += 1 }
+            sourceCounts[line.source, default: 0] += 1
         }
-        lines.append(contentsOf: appended)
-        if lines.count > Self.maximumLines {
-            lines.removeFirst(lines.count - Self.maximumLines)
+        var updatedSources = sources
+        for (source, count) in sourceCounts where updatedSources.indices.contains(source) {
+            updatedSources[source].lineCount += count
         }
+        sources = updatedSources
+        appendLines(appended)
+    }
+
+    /// Keep the history and the displayed subset in stable, 100-line groups.
+    /// Dropping a full oldest group avoids shifting a 20,000-element array on
+    /// every streaming batch, and keeps the view diff proportional to groups.
+    private func appendLines(_ newLines: [LogLine]) {
+        var stored = chunks
+        var visible = visibleChunks
+        var storedCount = lineCount
+        var shownCount = visibleLineCount
+        let needle = filterNeedle
+
+        // A many-pod initial tail can exceed the entire history limit in one
+        // batch. Only its newest lines can remain on screen or be exported.
+        if newLines.count >= Self.maximumLines {
+            stored = []
+            visible = []
+            storedCount = 0
+            shownCount = 0
+        }
+
+        for line in newLines.suffix(Self.maximumLines) {
+            Self.append(line, to: &stored)
+            storedCount += 1
+            if isVisible(line, needle: needle) {
+                Self.append(line, to: &visible)
+                shownCount += 1
+            }
+        }
+
+        while storedCount > Self.maximumLines {
+            let oldest = stored.removeFirst()
+            storedCount -= oldest.lines.count
+            if visible.first?.id == oldest.id {
+                shownCount -= visible.removeFirst().lines.count
+            }
+        }
+
+        chunks = stored
+        visibleChunks = visible
+        lineCount = storedCount
+        visibleLineCount = shownCount
+        longestVisibleLine = visible.map(\.longestTextLength).max() ?? 0
+    }
+
+    private static func append(_ line: LogLine, to chunks: inout [LineChunk]) {
+        let id = line.index / chunkSize
+        if chunks.last?.id != id { chunks.append(LineChunk(id: id)) }
+        chunks[chunks.count - 1].lines.append(line)
+        // The pane stops growing at 4,000 columns, so there is no need to
+        // count the rest of a very long log line just to calculate its width.
+        let length = line.text.prefix(4_000).count
+        chunks[chunks.count - 1].longestTextLength = max(
+            chunks[chunks.count - 1].longestTextLength, length
+        )
+    }
+
+    private func rebuildVisibleChunks() {
+        let needle = filterNeedle
+        var rebuilt: [LineChunk] = []
+        var count = 0
+        for chunk in chunks {
+            if needle.isEmpty && hiddenSources.isEmpty {
+                rebuilt.append(chunk)
+                count += chunk.lines.count
+            } else {
+                for line in chunk.lines where isVisible(line, needle: needle) {
+                    Self.append(line, to: &rebuilt)
+                    count += 1
+                }
+            }
+        }
+        visibleChunks = rebuilt
+        visibleLineCount = count
+        longestVisibleLine = rebuilt.map(\.longestTextLength).max() ?? 0
+    }
+
+    private func clearLines() {
+        chunks = []
+        visibleChunks = []
+        lineCount = 0
+        visibleLineCount = 0
+        longestVisibleLine = 0
     }
 
     // MARK: Export
 
     private var exportText: String {
-        filtered.map { line in
-            var text = ""
-            if timestamps, !line.stamp.isEmpty { text += line.stamp + " " }
-            if showsSourceColumn, sources.indices.contains(line.source) {
-                text += sources[line.source].label + " "
+        visibleChunks.flatMap { chunk in
+            chunk.lines.map { line in
+                var text = ""
+                if timestamps, !line.stamp.isEmpty { text += line.stamp + " " }
+                if showsSourceColumn, sources.indices.contains(line.source) {
+                    text += sources[line.source].label + " "
+                }
+                return text + line.text
             }
-            return text + line.text
         }
         .joined(separator: "\n")
     }

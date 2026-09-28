@@ -100,6 +100,7 @@ extension DetailRow where Content == Text {
 struct DetailSection<Content: View>: View {
     let title: String
     var systemImage: String?
+    var titleAction: (() -> Void)? = nil
     @State private var expanded = true
     @ViewBuilder var content: Content
 
@@ -112,7 +113,16 @@ struct DetailSection<Content: View>: View {
             .padding(.leading, 2)
         } label: {
             Label {
-                Text(title).font(.system(size: 12, weight: .semibold))
+                if let titleAction {
+                    Button(action: titleAction) {
+                        Text(title).font(.system(size: 12, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    .help("Open \(title)")
+                } else {
+                    Text(title).font(.system(size: 12, weight: .semibold))
+                }
             } icon: {
                 if let systemImage { Image(systemName: systemImage) }
             }

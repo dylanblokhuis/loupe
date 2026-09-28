@@ -264,21 +264,28 @@ struct ContainerCard: View {
 struct NodePodsSection: View {
     let connection: ClusterConnection
     let resource: APIResource
+    let nodeName: String
     var onInspect: (InspectionTarget) -> Void
+    var onBrowsePods: (String) -> Void
     @State private var model: ResourceListModel
 
     init(connection: ClusterConnection, node: KubeObject, resource: APIResource,
-         onInspect: @escaping (InspectionTarget) -> Void) {
+         onInspect: @escaping (InspectionTarget) -> Void,
+         onBrowsePods: @escaping (String) -> Void) {
         self.connection = connection
         self.resource = resource
+        self.nodeName = node.name
         self.onInspect = onInspect
+        self.onBrowsePods = onBrowsePods
         self._model = State(wrappedValue: ResourceListModel(
             resource: resource, connection: connection, fieldSelector: "spec.nodeName=\(node.name)"
         ))
     }
 
     var body: some View {
-        DetailSection(title: "Pods", systemImage: "cube") {
+        DetailSection(title: "Pods", systemImage: "cube", titleAction: {
+            onBrowsePods(nodeName)
+        }) {
             HStack {
                 Text(connection.effectiveNamespaces == nil ? "All namespaces" : "Selected namespaces")
                     .font(.system(size: 10))
@@ -346,6 +353,7 @@ struct NodeSections: View {
     let connection: ClusterConnection
     let node: KubeObject
     var onInspect: (InspectionTarget) -> Void
+    var onBrowsePods: (String) -> Void
 
     private var metrics: NodeMetrics? { connection.nodeMetrics[node.name] }
 
@@ -364,7 +372,10 @@ struct NodeSections: View {
         }
 
         if let resource = connection.catalog.resource(apiVersion: "v1", kind: "Pod") {
-            NodePodsSection(connection: connection, node: node, resource: resource, onInspect: onInspect)
+            NodePodsSection(
+                connection: connection, node: node, resource: resource,
+                onInspect: onInspect, onBrowsePods: onBrowsePods
+            )
                 .id(node.id)
         }
 
